@@ -1,0 +1,87 @@
+{
+  "characters": [
+    {
+      "name": "Jon Snow",
+      "description": "A man with dark, curly, shoulder-length hair and a full beard. He wears dark, heavy Northern-style leather armor with a high collar, studded details, and a silver direwolf pin on his chest. His expression is deeply conflicted, sorrowful, and desperate throughout the scene.",
+      "role": "protagonist",
+      "keyTraits": [
+        "honorable",
+        "conflicted",
+        "tragic hero",
+        "brooding"
+      ],
+      "multiviewDescription": "Seen primarily from the front with a sorrowful, pleading expression in tight close-ups. From the back and side in over-the-shoulder shots, his posture is tense and rigid, indicating his internal struggle. His silhouette appears bulky due to his heavy winter armor, which contrasts sharply with Daenerys's sleeker, fitted attire.",
+      "bestTimestamp": 41,
+      "imagePath": "/assets/images/movies--got--got_daenaerys_dies/char-0.jpg"
+    },
+    {
+      "name": "Daenerys Targaryen",
+      "description": "A young woman with pale skin and intricate, complex platinum blonde braided hair. She wears a structured, almost black leather dress with subtle scaly textures, asymmetrical shoulder pads, and a heavy silver chain draped diagonally across her chest connecting to a three-headed dragon pin. She looks resolute, zealous, yet emotionally vulnerable when speaking softly to Jon.",
+      "role": "antagonist",
+      "keyTraits": [
+        "zealous",
+        "deluded",
+        "charismatic",
+        "ruthless"
+      ],
+      "multiviewDescription": "Frontal close-ups show her soft, almost child-like conviction and pleading, starry eyes when trying to convince Jon of her vision. Profile shots highlight the intricate knotting of her hair braids and the militaristic, stiff cut of her dark outfit. Her posture is initially upright and proud as she admires the throne, but she physically softens and leans into Jon during their embrace.",
+      "bestTimestamp": 36,
+      "imagePath": "/assets/images/movies--got--got_daenaerys_dies/char-1.jpg"
+    }
+  ],
+  "environments": [
+    {
+      "name": "Ruined Throne Room, Red Keep",
+      "description": "The massive, cavernous hall is severely damaged. The roof is completely blown off and the thick stone walls are crumbled, exposing the stormy sky above. Massive piles of rubble, broken pillars, and debris litter the floor. A mixture of ash and snow falls continuously like a soft blizzard, blanketing the debris and the steps leading up to the Iron Throne.",
+      "lighting": "Soft, diffused, overcast natural light filtering down from the destroyed roof. The lighting is heavily tinted with cold, stark blue and gray hues, casting soft shadows.",
+      "timeOfDay": "Daytime (Overcast/Winter)",
+      "mood": "Somber, apocalyptic, tragic, eerie, and melancholic.",
+      "bestTimestamp": 22,
+      "imagePath": "/assets/images/movies--got--got_daenaerys_dies/env-0.jpg"
+    }
+  ],
+  "objects": [
+    {
+      "name": "The Iron Throne",
+      "description": "A tall, imposing, and jagged chair forged from hundreds of melted, twisted black swords. It sits at the top of a stone dais, miraculously mostly intact despite the utter destruction of the surrounding architecture.",
+      "significance": "The ultimate symbol of power, conquest, and the right to rule in Westeros. It represents the destructive ambition that drove Daenerys to madness and the cycle of violence Jon ultimately decides to break.",
+      "bestTimestamp": 30,
+      "imagePath": "/assets/images/movies--got--got_daenaerys_dies/obj-0.jpg"
+    }
+  ],
+  "plot": {
+    "summary": "Jon Snow confronts Daenerys Targaryen in the ruined throne room after her devastating destruction of King's Landing. He desperately pleads with her to show mercy to her enemies and questions the morality of her utopian vision. When Daenerys insists her violent methods are absolute and demands he build the new world by her side, Jon realizes she is a tyrant who will never stop conquering. He embraces her, verbally affirms her as his queen, kisses her passionately, and then tragically stabs her in the heart to save the realm.",
+    "currentArc": "The climax of the entire series; the final resolution of the song of ice and fire, culminating in the tragic downfall of Daenerys Targaryen.",
+    "keyEvents": [
+      "Jon confronts Daenerys about the execution of prisoners and the slaughter of innocents.",
+      "Daenerys rationalizes her actions as necessary for creating a 'good world'.",
+      "Daenerys asks Jon to rule with her and break the wheel together.",
+      "Jon embraces Daenerys and they share a final kiss.",
+      "Jon secretly draws a dagger and stabs Daenerys in the heart, killing her."
+    ],
+    "themes": [
+      "The corrupting nature of absolute power",
+      "Duty versus love",
+      "The cyclical nature of violence and tyranny",
+      "The tragic cost of a utopian vision",
+      "The burden of leadership"
+    ]
+  },
+  "seriesContext": {
+    "genre": "High Fantasy, Political Drama, Tragedy",
+    "era": "Medieval-inspired fantasy world (Westeros)",
+    "worldRules": "A harsh, brutal feudal world where political machinations, war, and betrayals dictate survival. Magic and mythological creatures like dragons exist but bring immense destruction. Actions have deeply realistic and often fatal consequences.",
+    "tone": "Dark, gritty, morally gray, epic, and profoundly tragic."
+  },
+  "cameraStyle": {
+    "commonAngles": [
+      "Extreme close-ups on faces to capture subtle emotional shifts and tears",
+      "Over-the-shoulder shots to establish the intimate but tense dynamic between the two characters",
+      "Wide establishing shots emphasizing how small the characters are amidst the massive destruction"
+    ],
+    "movementStyle": "Slow, deliberate push-ins during the dialogue to heighten tension, intimacy, and a sense of inescapable fate. The camerawork is generally very steady and smooth.",
+    "colorGrading": "Heavily desaturated with a dominant, cold blue and gray color palette. The muted colors emphasize the lifelessness, the onset of winter, and the bleak aftermath of absolute destruction.",
+    "visualTone": "Cinematic, moody, stark, cold, and deeply sorrowful.",
+    "aspectRatio": "1.78:1 (16:9 standard television format)"
+  }
+}
