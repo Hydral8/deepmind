@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getShow, getBranch, getEpisode } from "@/lib/data";
 import VideoPlayer from "@/components/VideoPlayer";
+import GenerationProgress from "@/components/GenerationProgress";
 import { Storyboard } from "@/lib/types";
 
 interface GeneratedBranch {
@@ -317,24 +318,19 @@ export default function BranchPage() {
                   </button>
                 </div>
               </div>
+              {generatingAll ? (
+                <div className="w-full p-4 bg-[#181818] border border-white/10">
+                  <GenerationProgress label="Generating All Videos" variant="full" />
+                </div>
+              ) : (
               <button
                 onClick={handleGenerateAll}
-                disabled={generatingAll}
-                className="w-full py-3 text-[11px] font-semibold tracking-[0.15em] uppercase bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-30 flex items-center justify-center gap-2"
+                className="w-full py-3 text-[11px] font-semibold tracking-[0.15em] uppercase bg-white text-black hover:bg-white/90 transition-colors flex items-center justify-center gap-2"
               >
-                {generatingAll ? (
-                  <>
-                    <div className="w-3.5 h-3.5 rounded-full border-2 border-black/20 border-t-black/80 animate-spin" />
-                    Generating All Videos...
-                  </>
-                ) : (
-                  <>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                       <polygon points="5 3 19 12 5 21 5 3" />
                     </svg>
                     Generate All Videos
-                  </>
-                )}
               </button>
             </div>
 
@@ -405,10 +401,7 @@ export default function BranchPage() {
                                 className="ml-auto px-3 py-1 text-[9px] font-semibold tracking-[0.1em] uppercase bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-30 flex items-center gap-1.5"
                               >
                                 {isGenerating ? (
-                                  <>
-                                    <div className="w-3 h-3 rounded-full border border-black/20 border-t-black/80 animate-spin" />
-                                    Generating...
-                                  </>
+                                  <GenerationProgress variant="inline" />
                                 ) : (
                                   <>
                                     <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
@@ -429,7 +422,7 @@ export default function BranchPage() {
                                 disabled={isGenerating}
                                 className="ml-auto px-3 py-1 text-[9px] tracking-[0.1em] uppercase text-white/25 hover:text-white/50 border border-white/10 hover:border-white/20 transition-colors disabled:opacity-30"
                               >
-                                {isGenerating ? "Regenerating..." : "Regenerate"}
+                                {isGenerating ? <GenerationProgress variant="inline" /> : "Regenerate"}
                               </button>
                             )}
                           </div>
@@ -456,8 +449,15 @@ export default function BranchPage() {
                             </div>
                           )}
 
+                          {/* Generation progress overlay */}
+                          {isGenerating && (
+                            <div className="mb-3 p-4 bg-black/60 border border-white/10 backdrop-blur-sm">
+                              <GenerationProgress label={`Generating Panel ${panel.order}`} variant="full" />
+                            </div>
+                          )}
+
                           {/* Inline video if generated */}
-                          {video?.status === "done" && video.videoUrl && (
+                          {!isGenerating && video?.status === "done" && video.videoUrl && (
                             <div className="mb-3 aspect-video bg-black border border-white/10 overflow-hidden">
                               <video
                                 key={video.videoUrl}
