@@ -1,0 +1,88 @@
+{
+  "branchId": "got-b1",
+  "showId": "game-of-thrones",
+  "episodeId": "got-s8-clip",
+  "title": "The Breaking of the Wheel",
+  "storyboard": {
+    "title": "The Breaking of the Wheel",
+    "panels": [
+      {
+        "id": "panel-1",
+        "order": 1,
+        "sceneDescription": "Daenerys turns away from the throne, looking out over the ruined city. The sheer scale of the devastation finally hits her, and her resolute facade crumbles into profound grief.",
+        "cameraAngle": "Over-the-shoulder transitioning to extreme close-up",
+        "cameraMovement": "Slow push-in",
+        "characters": [
+          "Daenerys Targaryen"
+        ],
+        "dialogue": "Look at what I've done... So much blood.",
+        "environment": "Ruined Throne Room of the Red Keep",
+        "mood": "Tragic, heartbroken, remorseful",
+        "duration": 6,
+        "visualPrompt": ""
+      },
+      {
+        "id": "panel-2",
+        "order": 2,
+        "sceneDescription": "She physically breaks down, knees buckling. Jon steps forward, catching her in a tight, protective embrace. He comforts her as they stand in the ruins.",
+        "cameraAngle": "Medium close-up two-shot",
+        "cameraMovement": "Slow panning and smooth push-in",
+        "characters": [
+          "Jon Snow",
+          "Daenerys Targaryen"
+        ],
+        "dialogue": "We can fix this. Together.",
+        "environment": "Ruined Throne Room of the Red Keep",
+        "mood": "Intimate, sorrowful, tender, forgiving",
+        "duration": 6,
+        "visualPrompt": ""
+      },
+      {
+        "id": "panel-3",
+        "order": 3,
+        "sceneDescription": "Together, they command Drogon to destroy the Iron Throne. The dragon breathes a torrent of fire, melting the symbol of power as Jon and Daenerys watch.",
+        "cameraAngle": "Wide establishing shot",
+        "cameraMovement": "Static, steady camera",
+        "characters": [
+          "Jon Snow",
+          "Daenerys Targaryen"
+        ],
+        "dialogue": "Dracarys.",
+        "environment": "Ruined Throne Room of the Red Keep",
+        "mood": "Epic, cathartic, definitive",
+        "duration": 6,
+        "visualPrompt": ""
+      }
+    ],
+    "musicPrompt": "Somber orchestral rising to triumphant, bittersweet strings",
+    "totalDuration": 18
+  },
+  "videos": {
+    "panel-1": {
+      "videoUrl": "",
+      "status": "error"
+    },
+    "panel-2": {
+      "videoUrl": "",
+      "status": "error"
+    },
+    "panel-3": {
+      "videoUrl": "",
+      "status": "error"
+    }
+  },
+  "images": {
+    "panel-2": {
+      "startImage": "/branches/images/got-b1/panel-2-start.png",
+      "endImage": "/branches/images/got-b1/panel-2-end.png"
+    },
+    "panel-3": {
+      "startImage": "/branches/images/got-b1/panel-3-start.png",
+      "endImage": "/branches/images/got-b1/panel-3-end.png"
+    },
+    "panel-1": {
+      "startImage": "/branches/images/got-b1/panel-1-start.png",
+      "endImage": "/branches/images/got-b1/panel-1-end.png"
+    }
+  }
+}

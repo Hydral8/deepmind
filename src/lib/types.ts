@@ -69,6 +69,9 @@ export interface StoryboardPanel {
   mood: string;
   duration: number; // seconds
   visualPrompt: string; // the full prompt for Veo
+  generationMode?: "interpolate" | "generate"; // interpolate from source video or generate fresh
+  startFrame?: string; // path to start frame image (from source video or AI-generated)
+  endFrame?: string;   // path to end frame image
 }
 
 export interface Storyboard {

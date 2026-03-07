@@ -87,48 +87,7 @@ export const SHOWS: Show[] = [
         duration: "25 min",
         thumbnail: "https://images.unsplash.com/photo-1518156677180-95a2893f3e9f?w=400&h=225&fit=crop",
         videoUrl: "/movies/twilight_zone/twilight-zone-s01e01.mp4",
-        branches: [
-          {
-            id: "tz-s1e1-b1",
-            episodeId: "tz-s1e1",
-            title: "He Was Never Alone",
-            description:
-              "What if the town wasn't empty at all, but the inhabitants were hiding? A paranoid twist on the isolation experiment.",
-            author: "zone_walker",
-            createdAt: "2025-01-15",
-            likes: 456,
-            forkPoint: "18:30",
-            scenes: [
-              {
-                id: "s1",
-                branchId: "tz-s1e1-b1",
-                order: 1,
-                description:
-                  "The man catches a shadow moving behind a window. He rushes inside and finds a room full of people, frozen mid-conversation.",
-                dialogue:
-                  '"They\'re not mannequins... they\'re breathing." - The Man',
-                imageUrl: "",
-                characters: [
-                  { id: "c1", name: "The Man", avatar: "", color: "#888" },
-                ],
-              },
-              {
-                id: "s2",
-                branchId: "tz-s1e1-b1",
-                order: 2,
-                description:
-                  "One by one, the frozen people turn their heads to look at him. They smile. 'We've been waiting for you,' they say in unison.",
-                dialogue:
-                  '"Welcome home." - The Townspeople',
-                imageUrl: "",
-                characters: [
-                  { id: "c1", name: "The Man", avatar: "", color: "#888" },
-                  { id: "c2", name: "Townspeople", avatar: "", color: "#666" },
-                ],
-              },
-            ],
-          },
-        ],
+        branches: [],
       },
       {
         id: "tz-s1e8",
@@ -141,59 +100,7 @@ export const SHOWS: Show[] = [
         duration: "25 min",
         thumbnail: "https://images.unsplash.com/photo-1507842217343-583bb7270b66?w=400&h=225&fit=crop",
         videoUrl: "/movies/twilight_zone/twilight-zone-s01e08.mp4",
-        branches: [
-          {
-            id: "tz-s1e8-b1",
-            episodeId: "tz-s1e8",
-            title: "The Glasses Survive",
-            description:
-              "The most requested alternate ending in TV history. What if Henry's glasses didn't break?",
-            author: "happy_endings",
-            createdAt: "2025-02-10",
-            likes: 1247,
-            forkPoint: "23:45",
-            scenes: [
-              {
-                id: "s1",
-                branchId: "tz-s1e8-b1",
-                order: 1,
-                description:
-                  "Henry stumbles on the library steps but catches himself. His glasses slip but he grabs them just in time.",
-                dialogue:
-                  '"Careful now, Henry. You have all the time in the world... and all the books." - Henry',
-                imageUrl: "",
-                characters: [
-                  { id: "c1", name: "Henry Bemis", avatar: "", color: "#888" },
-                ],
-              },
-              {
-                id: "s2",
-                branchId: "tz-s1e8-b1",
-                order: 2,
-                description:
-                  "Henry sits on the library steps surrounded by towers of books. He opens the first one and begins to read with tears of joy.",
-                dialogue:
-                  '"The best thing... the very best thing... is there\'s time now. All the time I need." - Henry',
-                imageUrl: "",
-                characters: [
-                  { id: "c1", name: "Henry Bemis", avatar: "", color: "#888" },
-                ],
-              },
-            ],
-          },
-          {
-            id: "tz-s1e8-b2",
-            episodeId: "tz-s1e8",
-            title: "He Wasn't Alone",
-            description:
-              "What if Henry wasn't the only survivor? Another person emerges from the rubble.",
-            author: "twilight_fan",
-            createdAt: "2025-02-14",
-            likes: 389,
-            forkPoint: "20:00",
-            scenes: [],
-          },
-        ],
+        branches: [],
       },
     ],
   },
@@ -224,19 +131,7 @@ export const SHOWS: Show[] = [
         duration: "12 min",
         thumbnail: "https://images.unsplash.com/photo-1535223289827-42f1e9919769?w=400&h=225&fit=crop",
         videoUrl: "/movies/tears_of_steel/tears-of-steel.mp4",
-        branches: [
-          {
-            id: "tos-b1",
-            episodeId: "tos-full",
-            title: "The AI Was Right",
-            description: "What if the AI's plan to merge with humanity was actually the better outcome?",
-            author: "machine_mind",
-            createdAt: "2025-03-01",
-            likes: 278,
-            forkPoint: "9:30",
-            scenes: [],
-          },
-        ],
+        branches: [],
       },
     ],
   },
@@ -309,8 +204,8 @@ export const SHOWS: Show[] = [
     year: 2011,
     rating: "TV-MA",
     seasons: 8,
-    image: "https://images.unsplash.com/photo-1533035353720-f1c6a75cd8ab?w=600&h=400&fit=crop",
-    banner: "https://images.unsplash.com/photo-1533035353720-f1c6a75cd8ab?w=1400&h=800&fit=crop",
+    image: "/movies/got/thumbnail.jpg",
+    banner: "/movies/got/banner.jpg",
     creator: "David Benioff & D.B. Weiss",
     stars: ["Emilia Clarke", "Kit Harington", "Peter Dinklage"],
     type: "series",
@@ -323,7 +218,7 @@ export const SHOWS: Show[] = [
         title: "The Iron Throne",
         description: "The finale. Daenerys must face the consequences of her actions. Jon Snow makes a fateful choice.",
         duration: "1 min",
-        thumbnail: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=400&h=225&fit=crop",
+        thumbnail: "/movies/got/thumbnail.jpg",
         videoUrl: "/movies/got/got_daenaerys_dies.mp4",
         branches: [
           {

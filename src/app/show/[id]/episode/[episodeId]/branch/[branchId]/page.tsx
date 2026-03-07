@@ -1,9 +1,26 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getShow, getBranch, getEpisode } from "@/lib/data";
 import VideoPlayer from "@/components/VideoPlayer";
+import { Storyboard } from "@/lib/types";
+
+interface FrameData {
+  startFrame?: string;
+  endFrame?: string;
+  startTimestamp?: number;
+  endTimestamp?: number;
+}
+
+interface GeneratedBranch {
+  storyboard: Storyboard;
+  videos: Record<string, { videoUrl: string; status: string }>;
+  images?: Record<string, { startImage?: string; endImage?: string }>;
+  frames?: Record<string, FrameData>;
+  fullVideo?: string;
+}
 
 export default function BranchPage() {
   const params = useParams();
@@ -15,6 +32,24 @@ export default function BranchPage() {
   const episode = getEpisode(showId, episodeId);
   const branch = getBranch(showId, episodeId, branchId);
 
+  const [generated, setGenerated] = useState<GeneratedBranch | null>(null);
+  const [activePanel, setActivePanel] = useState<string | null>(null);
+
+  // Try to load generated content for this branch
+  useEffect(() => {
+    fetch(`/branches/${branchId}.json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.storyboard) {
+          setGenerated({ storyboard: data.storyboard, videos: data.videos, images: data.images, frames: data.frames, fullVideo: data.fullVideo });
+          if (data.storyboard.panels.length > 0) {
+            setActivePanel(data.storyboard.panels[0].id);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [branchId]);
+
   if (!show || !episode || !branch) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -22,6 +57,18 @@ export default function BranchPage() {
       </div>
     );
   }
+
+  const activePanelData = generated?.storyboard.panels.find(
+    (p) => p.id === activePanel
+  );
+  const activeVideo = activePanel ? generated?.videos[activePanel] : null;
+  const activeImages = activePanel ? generated?.images?.[activePanel] : null;
+  const activeFrames = activePanel ? generated?.frames?.[activePanel] : null;
+
+  // Resolve start/end images: prefer frames (from source video), fall back to generated images
+  const resolvedStart = activeFrames?.startFrame || activeImages?.startImage;
+  const resolvedEnd = activeFrames?.endFrame || activeImages?.endImage;
+  const frameSource = activeFrames?.startFrame ? "video" : activeImages?.startImage ? "generated" : null;
 
   return (
     <main className="min-h-screen pt-20">
@@ -45,7 +92,9 @@ export default function BranchPage() {
             </svg>
           </div>
           <div>
-            <h1 className="text-[24px] font-black uppercase tracking-tight mb-1.5">{branch.title}</h1>
+            <h1 className="text-[24px] font-black uppercase tracking-tight mb-1.5">
+              {generated?.storyboard.title || branch.title}
+            </h1>
             <p className="text-[13px] text-white/35">{branch.description}</p>
           </div>
         </div>
@@ -62,73 +111,345 @@ export default function BranchPage() {
           <span>{branch.createdAt}</span>
         </div>
 
-        {/* Video player */}
-        <div className="mb-8">
-          <VideoPlayer
-            src={episode.videoUrl}
-            poster={episode.thumbnail}
-            forkPoint={branch.forkPoint}
-          />
-        </div>
+        {/* Generated content */}
+        {generated ? (
+          <div>
+            {/* Full video player */}
+            {generated.fullVideo && (
+              <div className="mb-6">
+                <div className="flex items-center gap-2 mb-2">
+                  <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/30">Full Alternate</h3>
+                  <span className="text-[8px] px-1.5 py-0.5 bg-green-500/10 text-green-400/60 tracking-[0.1em] uppercase">Complete</span>
+                </div>
+                <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                  <video
+                    controls
+                    className="w-full h-full"
+                    src={generated.fullVideo}
+                  />
+                </div>
+              </div>
+            )}
 
-        {/* Timeline indicator */}
-        <div className="flex items-center gap-3 p-4 bg-[#181818] mb-8">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-white/25" />
-            <span className="text-[10px] text-white/30 tracking-[0.15em] uppercase">Original</span>
-          </div>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/15">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-white" />
-            <span className="text-[10px] text-white font-semibold tracking-[0.15em] uppercase">
-              Alternate @ {branch.forkPoint}
-            </span>
-          </div>
-        </div>
+            {/* Video player for active panel */}
+            {activeVideo?.videoUrl && (
+              <div className="mb-6">
+                {generated.fullVideo && (
+                  <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/30 mb-2">Panel Clip</h3>
+                )}
+                <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                  <video
+                    key={activeVideo.videoUrl}
+                    controls
+                    autoPlay
+                    className="w-full h-full"
+                    src={activeVideo.videoUrl}
+                  />
+                </div>
+              </div>
+            )}
 
-        {/* Scenes */}
-        {branch.scenes.length > 0 && (
-          <div className="mb-10">
-            <h2 className="text-[12px] font-semibold tracking-[0.2em] uppercase text-white/50 mb-6">Scenes</h2>
-            <div className="space-y-4 relative">
-              <div className="absolute left-[13px] top-0 bottom-0 w-px bg-gradient-to-b from-white/20 via-white/10 to-transparent" />
-
-              {branch.scenes.map((scene, i) => (
-                <div key={scene.id} className="relative pl-10">
-                  <div className="absolute left-[9px] top-5 w-[9px] h-[9px] rounded-full bg-white border-2 border-[#0e0e0e]" />
-
-                  <div className="bg-[#181818] p-5 hover:bg-[#1f1f1f] transition-colors">
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-[10px] font-semibold text-white/50 tracking-[0.15em] uppercase">
-                        Scene {i + 1}
+            {/* Panel selector strip */}
+            <div className="flex gap-2 mb-8">
+              {generated.storyboard.panels.map((panel) => {
+                const video = generated.videos[panel.id];
+                const isActive = activePanel === panel.id;
+                return (
+                  <button
+                    key={panel.id}
+                    onClick={() => setActivePanel(panel.id)}
+                    className={`flex-1 p-3 text-left transition-all ${
+                      isActive
+                        ? "bg-white/10 border border-white/25"
+                        : "bg-[#181818] border border-white/5 hover:border-white/15"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-[10px] font-bold text-white/50">
+                        {panel.order}
                       </span>
-                      {scene.characters.map((char) => (
-                        <span key={char.id} className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40">
-                          {char.name}
+                      {video?.status === "done" && (
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="3">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                      <span className="text-[9px] text-white/20">{panel.duration}s</span>
+                    </div>
+                    <p className="text-[11px] text-white/50 line-clamp-2">
+                      {panel.sceneDescription}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Start/End frame images */}
+            {(resolvedStart || resolvedEnd) && (
+              <div className="mb-6">
+                <div className="flex items-center gap-3 mb-3">
+                  <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/30">
+                    Storyboard Frames
+                  </h3>
+                  {frameSource && (
+                    <span className={`text-[8px] px-1.5 py-0.5 tracking-[0.1em] uppercase ${
+                      frameSource === "video"
+                        ? "bg-blue-500/10 text-blue-400/60"
+                        : "bg-purple-500/10 text-purple-400/60"
+                    }`}>
+                      {frameSource === "video" ? "From Source Video" : "AI Generated"}
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {resolvedStart && (
+                    <div>
+                      <div className="aspect-video bg-black border border-white/10 overflow-hidden mb-1">
+                        <img
+                          src={resolvedStart}
+                          alt="Start frame"
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] text-white/20 tracking-[0.15em] uppercase">In Frame</span>
+                        {activeFrames?.startTimestamp && (
+                          <span className="text-[9px] text-white/15">@ {activeFrames.startTimestamp}s</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {resolvedEnd && (
+                    <div>
+                      <div className="aspect-video bg-black border border-white/10 overflow-hidden mb-1">
+                        <img
+                          src={resolvedEnd}
+                          alt="End frame"
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] text-white/20 tracking-[0.15em] uppercase">Out Frame</span>
+                        {activeFrames?.endTimestamp && (
+                          <span className="text-[9px] text-white/15">@ {activeFrames.endTimestamp}s</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Active panel details */}
+            {activePanelData && (
+              <div className="bg-[#181818] border border-white/5 p-6 mb-8">
+                <div className="flex items-start gap-4">
+                  <div className="w-8 h-8 flex items-center justify-center bg-white/5 text-[12px] font-bold text-white/40 flex-shrink-0">
+                    {activePanelData.order}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-[14px] text-white/80 mb-3">
+                      {activePanelData.sceneDescription}
+                    </p>
+                    {activePanelData.dialogue && (
+                      <div className="pl-4 border-l border-white/15 py-1 mb-3">
+                        <p className="text-[13px] italic text-white/40">
+                          &ldquo;{activePanelData.dialogue}&rdquo;
+                        </p>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-4 text-[10px] text-white/25">
+                      <span>Camera: {activePanelData.cameraAngle}</span>
+                      <span>Movement: {activePanelData.cameraMovement}</span>
+                      <span>Mood: {activePanelData.mood}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 mt-3">
+                      {activePanelData.characters.map((c, i) => (
+                        <span
+                          key={i}
+                          className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40"
+                        >
+                          {c}
                         </span>
                       ))}
                     </div>
-                    <p className="text-[13px] text-white/55 mb-3">{scene.description}</p>
-                    {scene.dialogue && (
-                      <div className="pl-4 border-l border-white/15 py-1">
-                        <p className="text-[12px] italic text-white/30">{scene.dialogue}</p>
-                      </div>
-                    )}
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
+              </div>
+            )}
 
-        {branch.scenes.length === 0 && (
-          <div className="border border-dashed border-white/10 p-12 text-center mb-10">
-            <p className="text-[12px] text-white/20">
-              This alternate timeline has been outlined but scenes haven&apos;t been generated yet.
-            </p>
+            {/* Storyboard overview */}
+            <div className="mb-10">
+              <h2 className="text-[12px] font-semibold tracking-[0.2em] uppercase text-white/50 mb-4">
+                Full Storyboard
+              </h2>
+              <div className="space-y-3 relative">
+                <div className="absolute left-[13px] top-0 bottom-0 w-px bg-gradient-to-b from-white/20 via-white/10 to-transparent" />
+
+                {generated.storyboard.panels.map((panel) => {
+                  const video = generated.videos[panel.id];
+                  const panelFrames = generated.frames?.[panel.id];
+                  const panelImages = generated.images?.[panel.id];
+                  const pStart = panelFrames?.startFrame || panelImages?.startImage;
+                  const pEnd = panelFrames?.endFrame || panelImages?.endImage;
+                  return (
+                    <div
+                      key={panel.id}
+                      className="relative pl-10 cursor-pointer"
+                      onClick={() => setActivePanel(panel.id)}
+                    >
+                      <div
+                        className={`absolute left-[9px] top-5 w-[9px] h-[9px] rounded-full border-2 border-[#0e0e0e] ${
+                          activePanel === panel.id ? "bg-white" : "bg-white/40"
+                        }`}
+                      />
+
+                      <div
+                        className={`p-5 transition-colors ${
+                          activePanel === panel.id
+                            ? "bg-[#1f1f1f] border border-white/15"
+                            : "bg-[#181818] hover:bg-[#1a1a1a]"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-[10px] font-semibold text-white/50 tracking-[0.15em] uppercase">
+                            Panel {panel.order}
+                          </span>
+                          {video?.status === "done" && (
+                            <span className="text-[8px] px-1.5 py-0.5 bg-green-500/10 text-green-400/60 tracking-[0.1em] uppercase">
+                              Generated
+                            </span>
+                          )}
+                          <span className="text-[9px] text-white/15">{panel.duration}s</span>
+                          {panel.characters.map((c, i) => (
+                            <span key={i} className="px-2 py-0.5 text-[9px] bg-white/5 text-white/30">
+                              {c}
+                            </span>
+                          ))}
+                        </div>
+
+                        {/* Inline frame thumbnails */}
+                        {(pStart || pEnd) && (
+                          <div className="flex gap-2 mb-3">
+                            {pStart && (
+                              <div className="w-[120px] flex-shrink-0">
+                                <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                  <img src={pStart} alt="In" className="w-full h-full object-cover" />
+                                </div>
+                                <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">In</span>
+                              </div>
+                            )}
+                            {pEnd && (
+                              <div className="w-[120px] flex-shrink-0">
+                                <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                  <img src={pEnd} alt="Out" className="w-full h-full object-cover" />
+                                </div>
+                                <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">Out</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        <p className="text-[13px] text-white/55 mb-2">
+                          {panel.sceneDescription}
+                        </p>
+                        {panel.dialogue && (
+                          <div className="pl-4 border-l border-white/15 py-1">
+                            <p className="text-[12px] italic text-white/30">
+                              &ldquo;{panel.dialogue}&rdquo;
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Music */}
+            {generated.storyboard.musicPrompt && (
+              <div className="p-4 bg-[#181818] border border-white/5 flex items-center gap-3 mb-10">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-white/40">
+                  <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+                </svg>
+                <div>
+                  <div className="text-[11px] font-semibold">Soundtrack</div>
+                  <div className="text-[10px] text-white/25">{generated.storyboard.musicPrompt}</div>
+                </div>
+              </div>
+            )}
           </div>
+        ) : (
+          <>
+            {/* Original video player */}
+            <div className="mb-8">
+              <VideoPlayer
+                src={episode.videoUrl}
+                poster={episode.thumbnail}
+                forkPoint={branch.forkPoint}
+              />
+            </div>
+
+            {/* Timeline indicator */}
+            <div className="flex items-center gap-3 p-4 bg-[#181818] mb-8">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-white/25" />
+                <span className="text-[10px] text-white/30 tracking-[0.15em] uppercase">Original</span>
+              </div>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/15">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-white" />
+                <span className="text-[10px] text-white font-semibold tracking-[0.15em] uppercase">
+                  Alternate @ {branch.forkPoint}
+                </span>
+              </div>
+            </div>
+
+            {/* Text scenes (legacy) */}
+            {branch.scenes.length > 0 && (
+              <div className="mb-10">
+                <h2 className="text-[12px] font-semibold tracking-[0.2em] uppercase text-white/50 mb-6">Scenes</h2>
+                <div className="space-y-4 relative">
+                  <div className="absolute left-[13px] top-0 bottom-0 w-px bg-gradient-to-b from-white/20 via-white/10 to-transparent" />
+
+                  {branch.scenes.map((scene, i) => (
+                    <div key={scene.id} className="relative pl-10">
+                      <div className="absolute left-[9px] top-5 w-[9px] h-[9px] rounded-full bg-white border-2 border-[#0e0e0e]" />
+
+                      <div className="bg-[#181818] p-5 hover:bg-[#1f1f1f] transition-colors">
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-[10px] font-semibold text-white/50 tracking-[0.15em] uppercase">
+                            Scene {i + 1}
+                          </span>
+                          {scene.characters.map((char) => (
+                            <span key={char.id} className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40">
+                              {char.name}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="text-[13px] text-white/55 mb-3">{scene.description}</p>
+                        {scene.dialogue && (
+                          <div className="pl-4 border-l border-white/15 py-1">
+                            <p className="text-[12px] italic text-white/30">{scene.dialogue}</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {branch.scenes.length === 0 && (
+              <div className="border border-dashed border-white/10 p-12 text-center mb-10">
+                <p className="text-[12px] text-white/20">
+                  This alternate timeline has been outlined but scenes haven&apos;t been generated yet.
+                </p>
+              </div>
+            )}
+          </>
         )}
       </div>
 

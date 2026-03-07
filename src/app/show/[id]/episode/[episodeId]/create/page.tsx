@@ -41,6 +41,11 @@ export default function CreatePage() {
   const [storyboard, setStoryboard] = useState<Storyboard | null>(null);
   const [storyboardLoading, setStoryboardLoading] = useState(false);
 
+  // ── Stage 3.5: Generation mode + frame planning ──
+  const [generationMode, setGenerationMode] = useState<"interpolate" | "generate">("interpolate");
+  const [framePlan, setFramePlan] = useState<Record<string, { startFrame: string; endFrame: string; startTimestamp: number; endTimestamp: number }> | null>(null);
+  const [planningFrames, setPlanningFrames] = useState(false);
+
   // ── Stage 4: Video generation ──
   const [generatedVideos, setGeneratedVideos] = useState<
     Record<string, { status: string; videoData?: string; videoUrl?: string; error?: string }>
@@ -179,9 +184,74 @@ export default function CreatePage() {
     }
   }
 
+  async function handlePlanFrames() {
+    if (!storyboard || !episode?.videoUrl) return;
+    setPlanningFrames(true);
+    try {
+      const branchId = `new-${Date.now()}`;
+      const res = await fetch("/api/plan-frames", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          panels: storyboard.panels,
+          videoPath: episode.videoUrl,
+          branchId,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFramePlan(data.framePlan);
+      }
+    } catch {
+      // Fall through - will generate without frames
+    } finally {
+      setPlanningFrames(false);
+    }
+  }
+
+  // Collect reference image paths from extracted assets
+  function getReferenceImagePaths(): string[] {
+    if (!assets) return [];
+    const paths: string[] = [];
+    for (const c of assets.characters) {
+      if (c.imagePath) paths.push(c.imagePath);
+    }
+    for (const e of assets.environments) {
+      if (e.imagePath) paths.push(e.imagePath);
+    }
+    return paths;
+  }
+
   async function handleGenerateVideos() {
     if (!storyboard) return;
     setStage("generating");
+
+    // If interpolating and no frame plan yet, plan first
+    if (generationMode === "interpolate" && !framePlan && episode?.videoUrl) {
+      setPlanningFrames(true);
+      try {
+        const branchId = `new-${Date.now()}`;
+        const res = await fetch("/api/plan-frames", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            panels: storyboard.panels,
+            videoPath: episode.videoUrl,
+            branchId,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setFramePlan(data.framePlan);
+        }
+      } catch {
+        // Continue without frames
+      } finally {
+        setPlanningFrames(false);
+      }
+    }
+
+    const referenceImagePaths = getReferenceImagePaths();
 
     // Initialize all panels as pending
     const initial: Record<string, { status: string }> = {};
@@ -193,13 +263,17 @@ export default function CreatePage() {
     // Fire all video generations in parallel
     const promises = storyboard.panels.map(async (panel: StoryboardPanel) => {
       try {
+        const panelFrame = framePlan?.[panel.id];
         const res = await fetch("/api/generate-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             panelId: panel.id,
-            visualPrompt: panel.visualPrompt,
+            visualPrompt: panel.visualPrompt || panel.sceneDescription,
             duration: panel.duration,
+            firstFramePath: generationMode === "interpolate" ? panelFrame?.startFrame : undefined,
+            lastFramePath: generationMode === "interpolate" ? panelFrame?.endFrame : undefined,
+            referenceImagePaths,
           }),
         });
 
@@ -571,67 +645,184 @@ export default function CreatePage() {
               </div>
             ) : storyboard ? (
               <div>
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h2 className="text-[18px] font-bold mb-1">
-                      {storyboard.title}
-                    </h2>
-                    <p className="text-[11px] text-white/30">
-                      {storyboard.panels.length} panels &middot;{" "}
-                      {storyboard.totalDuration}s total
-                    </p>
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h2 className="text-[18px] font-bold mb-1">
+                        {storyboard.title}
+                      </h2>
+                      <p className="text-[11px] text-white/30">
+                        {storyboard.panels.length} panels &middot;{" "}
+                        {storyboard.totalDuration}s total
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleGenerateVideos}
+                      disabled={planningFrames}
+                      className="px-8 py-3 bg-white text-black text-[11px] font-semibold tracking-[0.15em] uppercase hover:bg-white/90 transition-all disabled:opacity-30"
+                    >
+                      {planningFrames ? "Planning Frames..." : "Generate All Videos"}
+                    </button>
                   </div>
-                  <button
-                    onClick={handleGenerateVideos}
-                    className="px-8 py-3 bg-white text-black text-[11px] font-semibold tracking-[0.15em] uppercase hover:bg-white/90 transition-all"
-                  >
-                    Generate All Videos
-                  </button>
+
+                  {/* Generation mode selector */}
+                  <div className="flex gap-3 mb-4">
+                    <button
+                      onClick={() => { setGenerationMode("interpolate"); setFramePlan(null); }}
+                      className={`flex-1 p-3 text-left transition-all ${
+                        generationMode === "interpolate"
+                          ? "bg-blue-500/10 border border-blue-500/30"
+                          : "bg-[#181818] border border-white/5 hover:border-white/15"
+                      }`}
+                    >
+                      <div className="text-[11px] font-semibold mb-0.5">Interpolate from Source</div>
+                      <p className="text-[9px] text-white/30">
+                        Gemini picks start/end frames from the original video. Veo interpolates between them.
+                      </p>
+                    </button>
+                    <button
+                      onClick={() => { setGenerationMode("generate"); setFramePlan(null); }}
+                      className={`flex-1 p-3 text-left transition-all ${
+                        generationMode === "generate"
+                          ? "bg-purple-500/10 border border-purple-500/30"
+                          : "bg-[#181818] border border-white/5 hover:border-white/15"
+                      }`}
+                    >
+                      <div className="text-[11px] font-semibold mb-0.5">Generate New</div>
+                      <p className="text-[9px] text-white/30">
+                        Create entirely new footage using extracted assets (characters, environments) as reference.
+                      </p>
+                    </button>
+                  </div>
+
+                  {/* Frame plan preview button */}
+                  {generationMode === "interpolate" && !framePlan && episode?.videoUrl && (
+                    <button
+                      onClick={handlePlanFrames}
+                      disabled={planningFrames}
+                      className="w-full p-3 mb-4 bg-[#181818] border border-white/10 hover:border-white/20 text-[10px] text-white/40 tracking-[0.1em] uppercase transition-colors disabled:opacity-30"
+                    >
+                      {planningFrames ? "Analyzing video for best frames..." : "Preview Frame Plan"}
+                    </button>
+                  )}
+
+                  {/* Frame plan preview */}
+                  {framePlan && (
+                    <div className="mb-4 p-4 bg-[#181818] border border-blue-500/10">
+                      <h3 className="text-[10px] tracking-[0.2em] uppercase text-blue-400/60 mb-3">Frame Plan (from source video)</h3>
+                      <div className="space-y-3">
+                        {storyboard.panels.map((panel) => {
+                          const plan = framePlan[panel.id];
+                          if (!plan) return null;
+                          return (
+                            <div key={panel.id} className="flex items-center gap-3">
+                              <span className="text-[10px] text-white/30 w-16 flex-shrink-0">Panel {panel.order}</span>
+                              <div className="flex gap-2">
+                                <div className="w-[80px]">
+                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                    <img src={plan.startFrame} alt="In" className="w-full h-full object-cover" />
+                                  </div>
+                                  <span className="text-[8px] text-white/15">In @ {plan.startTimestamp}s</span>
+                                </div>
+                                <div className="flex items-center text-white/15">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
+                                </div>
+                                <div className="w-[80px]">
+                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                    <img src={plan.endFrame} alt="Out" className="w-full h-full object-cover" />
+                                  </div>
+                                  <span className="text-[8px] text-white/15">Out @ {plan.endTimestamp}s</span>
+                                </div>
+                              </div>
+                              <p className="text-[10px] text-white/30 flex-1 line-clamp-1">{panel.sceneDescription}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Reference assets info */}
+                  {assets && getReferenceImagePaths().length > 0 && (
+                    <div className="p-3 bg-[#181818] border border-white/5 mb-4 flex items-center gap-3">
+                      <span className="text-[9px] text-white/25 tracking-[0.1em] uppercase">Reference Assets:</span>
+                      <div className="flex gap-1.5">
+                        {getReferenceImagePaths().map((p, i) => (
+                          <div key={i} className="w-8 h-8 bg-black border border-white/10 overflow-hidden">
+                            <img src={p} alt="" className="w-full h-full object-cover" />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-4">
-                  {storyboard.panels.map((panel) => (
-                    <div
-                      key={panel.id}
-                      className="bg-[#181818] border border-white/5 p-5"
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className="w-8 h-8 flex items-center justify-center bg-white/5 text-[12px] font-bold text-white/40 flex-shrink-0">
-                          {panel.order}
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-[13px] text-white/80 mb-2">
-                            {panel.sceneDescription}
-                          </p>
-                          {panel.dialogue && (
-                            <p className="text-[12px] text-white/40 italic mb-2">
-                              &ldquo;{panel.dialogue}&rdquo;
-                            </p>
-                          )}
-                          <div className="flex flex-wrap gap-3 text-[10px] text-white/25">
-                            <span>
-                              Camera: {panel.cameraAngle}
-                            </span>
-                            <span>
-                              Movement: {panel.cameraMovement}
-                            </span>
-                            <span>Mood: {panel.mood}</span>
-                            <span>{panel.duration}s</span>
+                  {storyboard.panels.map((panel) => {
+                    const plan = framePlan?.[panel.id];
+                    return (
+                      <div
+                        key={panel.id}
+                        className="bg-[#181818] border border-white/5 p-5"
+                      >
+                        <div className="flex items-start gap-4">
+                          <div className="w-8 h-8 flex items-center justify-center bg-white/5 text-[12px] font-bold text-white/40 flex-shrink-0">
+                            {panel.order}
                           </div>
-                          <div className="flex flex-wrap gap-1.5 mt-2">
-                            {panel.characters.map((c, i) => (
-                              <span
-                                key={i}
-                                className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40"
-                              >
-                                {c}
+                          <div className="flex-1">
+                            {/* Inline frame thumbnails if available */}
+                            {plan && (
+                              <div className="flex gap-2 mb-3">
+                                <div className="w-[100px] flex-shrink-0">
+                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                    <img src={plan.startFrame} alt="In" className="w-full h-full object-cover" />
+                                  </div>
+                                  <span className="text-[8px] text-white/15">In @ {plan.startTimestamp}s</span>
+                                </div>
+                                <div className="flex items-center text-white/10">
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
+                                </div>
+                                <div className="w-[100px] flex-shrink-0">
+                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                    <img src={plan.endFrame} alt="Out" className="w-full h-full object-cover" />
+                                  </div>
+                                  <span className="text-[8px] text-white/15">Out @ {plan.endTimestamp}s</span>
+                                </div>
+                              </div>
+                            )}
+                            <p className="text-[13px] text-white/80 mb-2">
+                              {panel.sceneDescription}
+                            </p>
+                            {panel.dialogue && (
+                              <p className="text-[12px] text-white/40 italic mb-2">
+                                &ldquo;{panel.dialogue}&rdquo;
+                              </p>
+                            )}
+                            <div className="flex flex-wrap gap-3 text-[10px] text-white/25">
+                              <span>
+                                Camera: {panel.cameraAngle}
                               </span>
-                            ))}
+                              <span>
+                                Movement: {panel.cameraMovement}
+                              </span>
+                              <span>Mood: {panel.mood}</span>
+                              <span>{panel.duration}s</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                              {panel.characters.map((c, i) => (
+                                <span
+                                  key={i}
+                                  className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40"
+                                >
+                                  {c}
+                                </span>
+                              ))}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {storyboard.musicPrompt && (
