@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGeminiClient } from "@/lib/gemini";
 import { StoryboardPanel } from "@/lib/types";
+import { buildFramePlanningPrompt } from "@/lib/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
@@ -33,27 +34,7 @@ export async function POST(req: NextRequest) {
       )
       .join("\n");
 
-    const prompt = `You are analyzing a video clip to plan an alternate storyline. The original video will be used as source material - we need to pick the best frames from this video to use as START and END anchor frames for each new scene panel.
-
-For each panel below, pick:
-- startTimestamp: the timestamp (in total seconds, e.g. 22.5) of a frame from this video that would serve as the best STARTING visual anchor for this scene. Pick a frame that matches the environment, characters present, and mood as closely as possible.
-- endTimestamp: the timestamp of a frame that would serve as the best ENDING visual anchor. This should show the scene's resolution state.
-
-RULES:
-- Timestamps must be total seconds (NUMBER), not MM:SS format
-- Minimum timestamp is 3 (never pick frames before 3 seconds - they're often black)
-- Pick frames where characters are clearly visible and well-lit
-- Start and end frames should be DIFFERENT timestamps (at least 1 second apart)
-- Pick the most visually relevant frames for each panel's mood and content
-
-PANELS:
-${panelDescriptions}
-
-Respond with ONLY valid JSON - an array of objects:
-[
-  { "panelId": "panel-1", "startTimestamp": 10, "endTimestamp": 15 },
-  ...
-]`;
+    const prompt = buildFramePlanningPrompt(panelDescriptions);
 
     const response = await ai.models.generateContent({
       model: "gemini-3.1-pro-preview",

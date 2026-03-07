@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGeminiClient } from "@/lib/gemini";
+import { ExtractedAssets } from "@/lib/types";
+import { buildVideoPrompt } from "@/lib/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
@@ -10,7 +12,9 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
     panelId,
-    visualPrompt,
+    visualPrompt: rawVisualPrompt,
+    panel,
+    assets,
     duration,
     previousVideoPath,
     firstFramePath,
@@ -19,12 +23,19 @@ export async function POST(req: NextRequest) {
   } = body as {
     panelId: string;
     visualPrompt: string;
+    panel?: { visualPrompt: string; sceneDescription: string; cameraAngle: string; cameraMovement: string; mood: string; characters: string[]; environment: string; dialogue: string; duration: number; id: string; order: number };
+    assets?: ExtractedAssets;
     duration: number;
-    previousVideoPath?: string;  // path to previous panel's video for extension
+    previousVideoPath?: string;
     firstFramePath?: string;
     lastFramePath?: string;
     referenceImagePaths?: string[];
   };
+
+  // Use enriched prompt if assets are provided, otherwise fall back to raw prompt
+  const visualPrompt = (panel && assets)
+    ? buildVideoPrompt(panel, assets)
+    : rawVisualPrompt;
 
   try {
     const ai = getGeminiClient();
@@ -38,34 +49,38 @@ export async function POST(req: NextRequest) {
       return { imageBytes: data.toString("base64"), mimeType };
     }
 
-    function loadVideo(relativePath: string) {
-      const absPath = path.join(process.cwd(), "public", relativePath);
-      if (!fs.existsSync(absPath)) return null;
-      const data = fs.readFileSync(absPath);
-      return { videoBytes: data.toString("base64"), mimeType: "video/mp4" };
-    }
-
-    // Mode 1: Video extension (chain from previous panel)
+    // Mode 1: Video extension (chain from previous panel using file URI)
     if (previousVideoPath) {
-      const prevVideo = loadVideo(previousVideoPath);
-      if (prevVideo) {
-        console.log(`[${panelId}] Veo: extending previous video`);
+      console.log(`[${panelId}] Veo: extending previous video via file upload`);
+      // Upload the previous video as a file first, then reference it
+      const absVideoPath = path.join(process.cwd(), "public", previousVideoPath);
+      if (fs.existsSync(absVideoPath)) {
+        const videoData = fs.readFileSync(absVideoPath);
+        // Upload to Gemini files API
+        const uploadedFile = await ai.files.upload({
+          file: new Blob([videoData], { type: "video/mp4" }),
+          config: { mimeType: "video/mp4" },
+        });
+        console.log(`[${panelId}] Uploaded previous video: ${uploadedFile.name}`);
+
         const operation = await ai.models.generateVideos({
           model: "veo-3.1-generate-preview",
           prompt: visualPrompt,
-          video: { videoBytes: prevVideo.videoBytes, mimeType: prevVideo.mimeType },
+          video: { uri: uploadedFile.uri, mimeType: "video/mp4" },
           config: {
             numberOfVideos: 1,
             durationSeconds: Math.min(duration, 8),
           },
-        });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
         return await pollAndDownload(ai, operation, panelId);
       }
     }
 
     // Mode 2: Image-to-video with first frame
     const firstImg = firstFramePath ? loadImage(firstFramePath) : null;
-    if (firstImg) {
+    const lastImg = lastFramePath ? loadImage(lastFramePath) : null;
+    if (firstImg && lastImg) {
       console.log(`[${panelId}] Veo: image-to-video`);
       const operation = await ai.models.generateVideos({
         model: "veo-3.1-generate-preview",
@@ -74,6 +89,7 @@ export async function POST(req: NextRequest) {
         config: {
           numberOfVideos: 1,
           durationSeconds: Math.min(duration, 8),
+          lastFrame: { imageBytes: lastImg?.imageBytes, mimeType: lastImg?.mimeType },
         },
       });
       return await pollAndDownload(ai, operation, panelId);

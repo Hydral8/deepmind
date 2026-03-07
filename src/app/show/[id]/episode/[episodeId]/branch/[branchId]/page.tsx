@@ -1,24 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getShow, getBranch, getEpisode } from "@/lib/data";
 import VideoPlayer from "@/components/VideoPlayer";
 import { Storyboard } from "@/lib/types";
 
-interface FrameData {
-  startFrame?: string;
-  endFrame?: string;
-  startTimestamp?: number;
-  endTimestamp?: number;
-}
-
 interface GeneratedBranch {
   storyboard: Storyboard;
   videos: Record<string, { videoUrl: string; status: string }>;
   images?: Record<string, { startImage?: string; endImage?: string }>;
-  frames?: Record<string, FrameData>;
+  frames?: Record<string, { startFrame?: string; endFrame?: string; startTimestamp?: number; endTimestamp?: number }>;
   fullVideo?: string;
 }
 
@@ -34,14 +27,20 @@ export default function BranchPage() {
 
   const [generated, setGenerated] = useState<GeneratedBranch | null>(null);
   const [activePanel, setActivePanel] = useState<string | null>(null);
+  const [generating, setGenerating] = useState<Record<string, boolean>>({});
 
-  // Try to load generated content for this branch
   useEffect(() => {
     fetch(`/branches/${branchId}.json`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.storyboard) {
-          setGenerated({ storyboard: data.storyboard, videos: data.videos, images: data.images, frames: data.frames, fullVideo: data.fullVideo });
+          setGenerated({
+            storyboard: data.storyboard,
+            videos: data.videos || {},
+            images: data.images,
+            frames: data.frames,
+            fullVideo: data.fullVideo,
+          });
           if (data.storyboard.panels.length > 0) {
             setActivePanel(data.storyboard.panels[0].id);
           }
@@ -49,6 +48,45 @@ export default function BranchPage() {
       })
       .catch(() => {});
   }, [branchId]);
+
+  const handleGeneratePanel = useCallback(async (panelId: string) => {
+    if (!generated) return;
+    const panel = generated.storyboard.panels.find((p) => p.id === panelId);
+    if (!panel) return;
+
+    setGenerating((prev) => ({ ...prev, [panelId]: true }));
+
+    try {
+      const res = await fetch("/api/generate-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          panelId: panel.id,
+          visualPrompt: panel.visualPrompt || panel.sceneDescription,
+          duration: panel.duration,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.videoUrl) {
+        setGenerated((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            videos: {
+              ...prev.videos,
+              [panelId]: { videoUrl: data.videoUrl, status: "done" },
+            },
+          };
+        });
+        setActivePanel(panelId);
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setGenerating((prev) => ({ ...prev, [panelId]: false }));
+    }
+  }, [generated]);
 
   if (!show || !episode || !branch) {
     return (
@@ -58,17 +96,12 @@ export default function BranchPage() {
     );
   }
 
-  const activePanelData = generated?.storyboard.panels.find(
-    (p) => p.id === activePanel
-  );
+  const activePanelData = generated?.storyboard.panels.find((p) => p.id === activePanel);
   const activeVideo = activePanel ? generated?.videos[activePanel] : null;
   const activeImages = activePanel ? generated?.images?.[activePanel] : null;
   const activeFrames = activePanel ? generated?.frames?.[activePanel] : null;
-
-  // Resolve start/end images: prefer frames (from source video), fall back to generated images
   const resolvedStart = activeFrames?.startFrame || activeImages?.startImage;
   const resolvedEnd = activeFrames?.endFrame || activeImages?.endImage;
-  const frameSource = activeFrames?.startFrame ? "video" : activeImages?.startImage ? "generated" : null;
 
   return (
     <main className="min-h-screen pt-20">
@@ -111,186 +144,74 @@ export default function BranchPage() {
           <span>{branch.createdAt}</span>
         </div>
 
-        {/* Generated content */}
+        {/* Generated storyboard */}
         {generated ? (
           <div>
-            {/* Full video player */}
+            {/* Full video if available */}
             {generated.fullVideo && (
-              <div className="mb-6">
+              <div className="mb-8">
                 <div className="flex items-center gap-2 mb-2">
                   <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/30">Full Alternate</h3>
                   <span className="text-[8px] px-1.5 py-0.5 bg-green-500/10 text-green-400/60 tracking-[0.1em] uppercase">Complete</span>
                 </div>
                 <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                  <video
-                    controls
-                    className="w-full h-full"
-                    src={generated.fullVideo}
-                  />
+                  <video controls className="w-full h-full" src={generated.fullVideo} />
                 </div>
               </div>
             )}
 
-            {/* Video player for active panel */}
+            {/* Active panel video */}
             {activeVideo?.videoUrl && (
               <div className="mb-6">
-                {generated.fullVideo && (
-                  <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/30 mb-2">Panel Clip</h3>
-                )}
                 <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                  <video
-                    key={activeVideo.videoUrl}
-                    controls
-                    autoPlay
-                    className="w-full h-full"
-                    src={activeVideo.videoUrl}
-                  />
+                  <video key={activeVideo.videoUrl} controls autoPlay className="w-full h-full" src={activeVideo.videoUrl} />
                 </div>
               </div>
             )}
 
-            {/* Panel selector strip */}
-            <div className="flex gap-2 mb-8">
-              {generated.storyboard.panels.map((panel) => {
-                const video = generated.videos[panel.id];
-                const isActive = activePanel === panel.id;
-                return (
-                  <button
-                    key={panel.id}
-                    onClick={() => setActivePanel(panel.id)}
-                    className={`flex-1 p-3 text-left transition-all ${
-                      isActive
-                        ? "bg-white/10 border border-white/25"
-                        : "bg-[#181818] border border-white/5 hover:border-white/15"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-[10px] font-bold text-white/50">
-                        {panel.order}
-                      </span>
-                      {video?.status === "done" && (
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="3">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      )}
-                      <span className="text-[9px] text-white/20">{panel.duration}s</span>
-                    </div>
-                    <p className="text-[11px] text-white/50 line-clamp-2">
-                      {panel.sceneDescription}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Start/End frame images */}
+            {/* Start/End frames for active panel */}
             {(resolvedStart || resolvedEnd) && (
               <div className="mb-6">
                 <div className="flex items-center gap-3 mb-3">
-                  <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/30">
-                    Storyboard Frames
-                  </h3>
-                  {frameSource && (
-                    <span className={`text-[8px] px-1.5 py-0.5 tracking-[0.1em] uppercase ${
-                      frameSource === "video"
-                        ? "bg-blue-500/10 text-blue-400/60"
-                        : "bg-purple-500/10 text-purple-400/60"
-                    }`}>
-                      {frameSource === "video" ? "From Source Video" : "AI Generated"}
-                    </span>
-                  )}
+                  <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/30">Storyboard Frames</h3>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   {resolvedStart && (
                     <div>
                       <div className="aspect-video bg-black border border-white/10 overflow-hidden mb-1">
-                        <img
-                          src={resolvedStart}
-                          alt="Start frame"
-                          className="w-full h-full object-cover"
-                        />
+                        <img src={resolvedStart} alt="In frame" className="w-full h-full object-cover" />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[9px] text-white/20 tracking-[0.15em] uppercase">In Frame</span>
-                        {activeFrames?.startTimestamp && (
-                          <span className="text-[9px] text-white/15">@ {activeFrames.startTimestamp}s</span>
-                        )}
-                      </div>
+                      <span className="text-[9px] text-white/20 tracking-[0.15em] uppercase">In Frame</span>
                     </div>
                   )}
                   {resolvedEnd && (
                     <div>
                       <div className="aspect-video bg-black border border-white/10 overflow-hidden mb-1">
-                        <img
-                          src={resolvedEnd}
-                          alt="End frame"
-                          className="w-full h-full object-cover"
-                        />
+                        <img src={resolvedEnd} alt="Out frame" className="w-full h-full object-cover" />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[9px] text-white/20 tracking-[0.15em] uppercase">Out Frame</span>
-                        {activeFrames?.endTimestamp && (
-                          <span className="text-[9px] text-white/15">@ {activeFrames.endTimestamp}s</span>
-                        )}
-                      </div>
+                      <span className="text-[9px] text-white/20 tracking-[0.15em] uppercase">Out Frame</span>
                     </div>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Active panel details */}
-            {activePanelData && (
-              <div className="bg-[#181818] border border-white/5 p-6 mb-8">
-                <div className="flex items-start gap-4">
-                  <div className="w-8 h-8 flex items-center justify-center bg-white/5 text-[12px] font-bold text-white/40 flex-shrink-0">
-                    {activePanelData.order}
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-[14px] text-white/80 mb-3">
-                      {activePanelData.sceneDescription}
-                    </p>
-                    {activePanelData.dialogue && (
-                      <div className="pl-4 border-l border-white/15 py-1 mb-3">
-                        <p className="text-[13px] italic text-white/40">
-                          &ldquo;{activePanelData.dialogue}&rdquo;
-                        </p>
-                      </div>
-                    )}
-                    <div className="flex flex-wrap gap-4 text-[10px] text-white/25">
-                      <span>Camera: {activePanelData.cameraAngle}</span>
-                      <span>Movement: {activePanelData.cameraMovement}</span>
-                      <span>Mood: {activePanelData.mood}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 mt-3">
-                      {activePanelData.characters.map((c, i) => (
-                        <span
-                          key={i}
-                          className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40"
-                        >
-                          {c}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Storyboard overview */}
+            {/* Storyboard panels */}
             <div className="mb-10">
               <h2 className="text-[12px] font-semibold tracking-[0.2em] uppercase text-white/50 mb-4">
-                Full Storyboard
+                Storyboard
               </h2>
               <div className="space-y-3 relative">
                 <div className="absolute left-[13px] top-0 bottom-0 w-px bg-gradient-to-b from-white/20 via-white/10 to-transparent" />
 
                 {generated.storyboard.panels.map((panel) => {
                   const video = generated.videos[panel.id];
-                  const panelFrames = generated.frames?.[panel.id];
                   const panelImages = generated.images?.[panel.id];
-                  const pStart = panelFrames?.startFrame || panelImages?.startImage;
-                  const pEnd = panelFrames?.endFrame || panelImages?.endImage;
+                  const pStart = panelImages?.startImage;
+                  const pEnd = panelImages?.endImage;
+                  const isActive = activePanel === panel.id;
+                  const isGenerating = generating[panel.id];
+
                   return (
                     <div
                       key={panel.id}
@@ -299,13 +220,13 @@ export default function BranchPage() {
                     >
                       <div
                         className={`absolute left-[9px] top-5 w-[9px] h-[9px] rounded-full border-2 border-[#0e0e0e] ${
-                          activePanel === panel.id ? "bg-white" : "bg-white/40"
+                          isActive ? "bg-white" : "bg-white/40"
                         }`}
                       />
 
                       <div
                         className={`p-5 transition-colors ${
-                          activePanel === panel.id
+                          isActive
                             ? "bg-[#1f1f1f] border border-white/15"
                             : "bg-[#181818] hover:bg-[#1a1a1a]"
                         }`}
@@ -325,6 +246,45 @@ export default function BranchPage() {
                               {c}
                             </span>
                           ))}
+
+                          {/* Generate button */}
+                          {(!video || video.status !== "done") && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleGeneratePanel(panel.id);
+                              }}
+                              disabled={isGenerating}
+                              className="ml-auto px-3 py-1 text-[9px] font-semibold tracking-[0.1em] uppercase bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-30 flex items-center gap-1.5"
+                            >
+                              {isGenerating ? (
+                                <>
+                                  <div className="w-3 h-3 rounded-full border border-black/20 border-t-black/80 animate-spin" />
+                                  Generating...
+                                </>
+                              ) : (
+                                <>
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                                    <polygon points="5 3 19 12 5 21 5 3" />
+                                  </svg>
+                                  Generate Video
+                                </>
+                              )}
+                            </button>
+                          )}
+
+                          {video?.status === "done" && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleGeneratePanel(panel.id);
+                              }}
+                              disabled={isGenerating}
+                              className="ml-auto px-3 py-1 text-[9px] tracking-[0.1em] uppercase text-white/25 hover:text-white/50 border border-white/10 hover:border-white/20 transition-colors disabled:opacity-30"
+                            >
+                              {isGenerating ? "Regenerating..." : "Regenerate"}
+                            </button>
+                          )}
                         </div>
 
                         {/* Inline frame thumbnails */}
@@ -349,16 +309,33 @@ export default function BranchPage() {
                           </div>
                         )}
 
+                        {/* Inline video if generated */}
+                        {video?.status === "done" && video.videoUrl && (
+                          <div className="mb-3 aspect-video bg-black border border-white/10 overflow-hidden">
+                            <video
+                              key={video.videoUrl}
+                              controls
+                              className="w-full h-full"
+                              src={video.videoUrl}
+                            />
+                          </div>
+                        )}
+
                         <p className="text-[13px] text-white/55 mb-2">
                           {panel.sceneDescription}
                         </p>
                         {panel.dialogue && (
-                          <div className="pl-4 border-l border-white/15 py-1">
+                          <div className="pl-4 border-l border-white/15 py-1 mb-2">
                             <p className="text-[12px] italic text-white/30">
                               &ldquo;{panel.dialogue}&rdquo;
                             </p>
                           </div>
                         )}
+                        <div className="flex flex-wrap gap-3 text-[10px] text-white/20">
+                          <span>Camera: {panel.cameraAngle}</span>
+                          <span>Movement: {panel.cameraMovement}</span>
+                          <span>Mood: {panel.mood}</span>
+                        </div>
                       </div>
                     </div>
                   );
@@ -407,17 +384,15 @@ export default function BranchPage() {
               </div>
             </div>
 
-            {/* Text scenes (legacy) */}
+            {/* Legacy text scenes */}
             {branch.scenes.length > 0 && (
               <div className="mb-10">
                 <h2 className="text-[12px] font-semibold tracking-[0.2em] uppercase text-white/50 mb-6">Scenes</h2>
                 <div className="space-y-4 relative">
                   <div className="absolute left-[13px] top-0 bottom-0 w-px bg-gradient-to-b from-white/20 via-white/10 to-transparent" />
-
                   {branch.scenes.map((scene, i) => (
                     <div key={scene.id} className="relative pl-10">
                       <div className="absolute left-[9px] top-5 w-[9px] h-[9px] rounded-full bg-white border-2 border-[#0e0e0e]" />
-
                       <div className="bg-[#181818] p-5 hover:bg-[#1f1f1f] transition-colors">
                         <div className="flex items-center gap-2 mb-3">
                           <span className="text-[10px] font-semibold text-white/50 tracking-[0.15em] uppercase">

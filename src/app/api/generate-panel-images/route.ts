@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGeminiClient } from "@/lib/gemini";
 import { StoryboardPanel, ExtractedAssets } from "@/lib/types";
+import { buildPanelImagePrompt } from "@/lib/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
@@ -115,23 +116,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const assetContext = referenceDescriptions.length > 0
-      ? `\n\nREFERENCE ASSETS (see attached images - you MUST match these exactly):\n${referenceDescriptions.join("\n")}\n\nThe attached reference images show exactly how these characters and environments look. Generate an image that matches these references precisely - same faces, same costumes, same environment details.`
-      : "";
-
-    // Generate start frame image with reference images
-    const startPrompt = `Generate a cinematic film frame image. This is the OPENING frame of a scene.
-
-Scene: ${panel.sceneDescription}
-${panel.visualPrompt ? `Visual details: ${panel.visualPrompt}` : ""}
-${assetContext}
-
-Style: ${assets.cameraStyle.colorGrading}, ${assets.cameraStyle.visualTone}
-Camera: ${panel.cameraAngle}
-Mood: ${panel.mood}
-Environment: ${panel.environment}
-
-CRITICAL: Match the characters and environment from the reference images exactly. Same faces, same clothing, same setting. This should look like a real film still - photorealistic, cinematic lighting, proper film color grading. 16:9 aspect ratio.`;
+    const startPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "start");
 
     const startParts = [
       ...referenceImageParts,
@@ -158,20 +143,7 @@ CRITICAL: Match the characters and environment from the reference images exactly
       }
     }
 
-    // Generate end frame image with reference images
-    const endPrompt = `Generate a cinematic film frame image. This is the CLOSING/END frame of a scene.
-
-Scene: ${panel.sceneDescription}
-The scene ends with: ${panel.dialogue ? `"${panel.dialogue}"` : panel.sceneDescription}
-Show the final moment/resolution of this beat.
-${panel.visualPrompt ? `Visual details: ${panel.visualPrompt}` : ""}
-${assetContext}
-
-Style: ${assets.cameraStyle.colorGrading}, ${assets.cameraStyle.visualTone}
-Camera: ${panel.cameraAngle}
-Mood: ${panel.mood}
-
-CRITICAL: Match the characters and environment from the reference images exactly. Same faces, same clothing, same setting. This should look like a real film still - photorealistic, cinematic lighting, proper film color grading. 16:9 aspect ratio.`;
+    const endPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "end");
 
     const endParts = [
       ...referenceImageParts,

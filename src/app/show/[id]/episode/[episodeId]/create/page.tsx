@@ -270,6 +270,8 @@ export default function CreatePage() {
           body: JSON.stringify({
             panelId: panel.id,
             visualPrompt: panel.visualPrompt || panel.sceneDescription,
+            panel,
+            assets,
             duration: panel.duration,
             firstFramePath: generationMode === "interpolate" ? panelFrame?.startFrame : undefined,
             lastFramePath: generationMode === "interpolate" ? panelFrame?.endFrame : undefined,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGeminiClient } from "@/lib/gemini";
 import { ExtractedAssets } from "@/lib/types";
+import { buildAssetExtractionPrompt, buildAssetVerificationPrompt } from "@/lib/prompts";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
@@ -95,69 +96,7 @@ export async function POST(req: NextRequest) {
               },
             },
             {
-              text: `You are analyzing a video clip from "${showTitle}" - episode "${episodeTitle}".
-
-Extract ALL of the following information as a JSON object. Be extremely detailed and specific.
-
-IMPORTANT TIMESTAMP RULES:
-- For each character, environment, and object, include a "bestTimestamp" field — this must be a NUMBER representing TOTAL SECONDS into the video (e.g. 45 means 45 seconds in, 90 means 1 minute 30 seconds in). Do NOT use MM:SS or MM.SS format.
-- Pick the moment where the character's face is most clearly shown, or the environment is seen in its widest/best shot.
-- NEVER use a timestamp less than 3. The first few seconds of a video are often black screens, title cards, or fades. Always pick a timestamp at least 3 seconds in.
-- Double-check your timestamps: the frame at that time must show actual visible content — not a black screen, not a fade transition, not a dark/obscured frame. Choose a well-lit, clear moment.
-- For characters, prefer a close-up or medium shot where their face and features are clearly visible. Cross-reference against your knowledge of the show to make sure you pick a frame that actually shows THAT character, not a different one.
-- For environments, prefer a wide establishing shot with good visibility of the location.
-
-{
-  "characters": [
-    {
-      "name": "character name (use actual character name if recognizable, otherwise descriptive name)",
-      "description": "detailed visual appearance - clothing, hair, skin tone, build, distinguishing features",
-      "role": "protagonist/antagonist/supporting/background",
-      "keyTraits": ["trait1", "trait2"],
-      "multiviewDescription": "describe how this character looks from different angles shown in the video - front, side, back views if available. Include posture, gait, silhouette details",
-      "bestTimestamp": 12.5
-    }
-  ],
-  "environments": [
-    {
-      "name": "location name",
-      "description": "detailed description of the setting",
-      "lighting": "lighting conditions and style",
-      "timeOfDay": "time of day",
-      "mood": "atmospheric mood",
-      "bestTimestamp": 5.0
-    }
-  ],
-  "objects": [
-    {
-      "name": "notable object",
-      "description": "visual description",
-      "significance": "narrative significance",
-      "bestTimestamp": 8.0
-    }
-  ],
-  "plot": {
-    "summary": "what happens in this clip",
-    "currentArc": "where this falls in the story arc",
-    "keyEvents": ["event1", "event2"],
-    "themes": ["theme1", "theme2"]
-  },
-  "seriesContext": {
-    "genre": "genre classification",
-    "era": "time period/setting era",
-    "worldRules": "rules of this world - magic, technology, social norms etc",
-    "tone": "overall tone of the series"
-  },
-  "cameraStyle": {
-    "commonAngles": ["angle1", "angle2"],
-    "movementStyle": "how the camera moves - handheld, steady, tracking, etc",
-    "colorGrading": "describe the color palette and grading style",
-    "visualTone": "visual mood - gritty, clean, dreamy, etc",
-    "aspectRatio": "estimated aspect ratio"
-  }
-}
-
-Return ONLY valid JSON, no markdown fences.`,
+              text: buildAssetExtractionPrompt(showTitle, episodeTitle),
             },
           ],
         },
@@ -226,25 +165,7 @@ Return ONLY valid JSON, no markdown fences.`,
               },
             },
             {
-              text: `You previously identified these characters in this video from "${showTitle}":
-
-${charSummary}
-
-Now VERIFY each one by checking the actual frame at the given timestamp:
-1. Go to each timestamp and check: does that frame clearly show the named character's FACE?
-2. Cross-reference against your knowledge of "${showTitle}" — is this actually that character? Does their appearance (hair color, clothing, features) match?
-3. Is the frame well-lit and not black/dark/obscured/a transition?
-4. If the character is only shown from behind or their face is hidden, that's NOT a good frame.
-
-For any that fail verification, suggest a BETTER timestamp (in TOTAL SECONDS, e.g. 45 means 45 seconds in) where that character's face is clearly visible in a close-up or medium shot. The suggested timestamp must be at least 3.
-
-Return a JSON array:
-[
-  { "index": 0, "correct": true },
-  { "index": 1, "correct": false, "reason": "frame is too dark", "suggestedTimestamp": 45 }
-]
-
-Return ONLY valid JSON, no markdown.`,
+              text: buildAssetVerificationPrompt(showTitle, charSummary),
             },
           ],
         },
