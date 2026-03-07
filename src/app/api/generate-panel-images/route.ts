@@ -12,11 +12,13 @@ fal.config({ credentials: process.env.FAL_KEY });
 
 export async function POST(req: NextRequest) {
   try {
-    const { panel, assets, videoPath, branchId } = (await req.json()) as {
+    const { panel, assets, videoPath, branchId, useOriginalFrames, numVariants = 1 } = (await req.json()) as {
       panel: StoryboardPanel;
       assets: ExtractedAssets;
       videoPath?: string;
       branchId: string;
+      useOriginalFrames?: boolean;
+      numVariants?: number;
     };
 
     const outputDir = path.join(process.cwd(), "public", "branches", "images", branchId);
@@ -24,14 +26,8 @@ export async function POST(req: NextRequest) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    const results: { startImage?: string; endImage?: string } = {};
-
-    // Check if this panel modifies an existing scene (has source video + is a small change)
-    const isMinorChange = panel.sceneDescription.toLowerCase().includes("same scene") ||
-      panel.sceneDescription.toLowerCase().includes("original") ||
-      panel.cameraAngle.toLowerCase().includes("match");
-
-    if (isMinorChange && videoPath) {
+    // Use original video frames if Gemini told us to
+    if (useOriginalFrames && videoPath) {
       const absVideoPath = path.join(process.cwd(), "public", videoPath);
       if (fs.existsSync(absVideoPath)) {
         const startFramePath = path.join(outputDir, `${panel.id}-start-ref.jpg`);
@@ -40,6 +36,7 @@ export async function POST(req: NextRequest) {
           execSync(`ffmpeg -y -ss 3 -i "${absVideoPath}" -frames:v 1 -q:v 2 "${startFramePath}" 2>/dev/null`, { timeout: 10000 });
           execSync(`ffmpeg -y -ss 5 -i "${absVideoPath}" -frames:v 1 -q:v 2 "${endFramePath}" 2>/dev/null`, { timeout: 10000 });
 
+          const results: { startImage?: string; endImage?: string } = {};
           if (fs.existsSync(startFramePath)) {
             results.startImage = `/branches/images/${branchId}/${panel.id}-start-ref.jpg`;
           }
@@ -77,55 +74,74 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Generate start frame with Grok Imagine
-    const startPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "start");
-    console.log(`[${panel.id}] Generating start frame with Grok Imagine...`);
+    const variantCount = Math.min(Math.max(numVariants, 1), 4);
 
-    const startResult = await fal.subscribe("xai/grok-imagine-image", {
+    // Generate start frame variants with Nano Banana 2
+    const startPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "start");
+    console.log(`[${panel.id}] Generating ${variantCount} start frame variant(s) with Nano Banana 2...`);
+
+    const startResult = await fal.subscribe("fal-ai/nano-banana-2", {
       input: {
         prompt: startPrompt,
-        num_images: 1,
+        num_images: variantCount,
         aspect_ratio: "16:9",
         output_format: "png",
+        resolution: "1K",
       },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const startImageUrl = (startResult.data as any)?.images?.[0]?.url;
-    if (startImageUrl) {
-      const imgResponse = await fetch(startImageUrl);
+    const startImages = (startResult.data as any)?.images || [];
+    const startVariants: string[] = [];
+    for (let v = 0; v < startImages.length; v++) {
+      const imgUrl = startImages[v]?.url;
+      if (!imgUrl) continue;
+      const imgResponse = await fetch(imgUrl);
       const buffer = Buffer.from(await imgResponse.arrayBuffer());
-      const filename = `${panel.id}-start.png`;
+      const suffix = variantCount > 1 ? `-v${v + 1}` : "";
+      const filename = `${panel.id}-start${suffix}.png`;
       fs.writeFileSync(path.join(outputDir, filename), buffer);
-      results.startImage = `/branches/images/${branchId}/${filename}`;
+      startVariants.push(`/branches/images/${branchId}/${filename}`);
       console.log(`[${panel.id}] Start frame saved: ${filename}`);
     }
 
-    // Generate end frame with Grok Imagine
+    // Generate end frame variants with Nano Banana 2
     const endPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "end");
-    console.log(`[${panel.id}] Generating end frame with Grok Imagine...`);
+    console.log(`[${panel.id}] Generating ${variantCount} end frame variant(s) with Nano Banana 2...`);
 
-    const endResult = await fal.subscribe("xai/grok-imagine-image", {
+    const endResult = await fal.subscribe("fal-ai/nano-banana-2", {
       input: {
         prompt: endPrompt,
-        num_images: 1,
+        num_images: variantCount,
         aspect_ratio: "16:9",
         output_format: "png",
+        resolution: "1K",
       },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const endImageUrl = (endResult.data as any)?.images?.[0]?.url;
-    if (endImageUrl) {
-      const imgResponse = await fetch(endImageUrl);
+    const endImages = (endResult.data as any)?.images || [];
+    const endVariants: string[] = [];
+    for (let v = 0; v < endImages.length; v++) {
+      const imgUrl = endImages[v]?.url;
+      if (!imgUrl) continue;
+      const imgResponse = await fetch(imgUrl);
       const buffer = Buffer.from(await imgResponse.arrayBuffer());
-      const filename = `${panel.id}-end.png`;
+      const suffix = variantCount > 1 ? `-v${v + 1}` : "";
+      const filename = `${panel.id}-end${suffix}.png`;
       fs.writeFileSync(path.join(outputDir, filename), buffer);
-      results.endImage = `/branches/images/${branchId}/${filename}`;
+      endVariants.push(`/branches/images/${branchId}/${filename}`);
       console.log(`[${panel.id}] End frame saved: ${filename}`);
     }
 
-    return NextResponse.json({ panelId: panel.id, ...results, source: "generated" });
+    return NextResponse.json({
+      panelId: panel.id,
+      // Default selected (first variant)
+      startImage: startVariants[0],
+      endImage: endVariants[0],
+      // All variants for choosing
+      startVariants,
+      endVariants,
+      source: "generated",
+    });
   } catch (error: unknown) {
     console.error("Panel image generation error:", error);
     const message = error instanceof Error ? error.message : "Unknown error";

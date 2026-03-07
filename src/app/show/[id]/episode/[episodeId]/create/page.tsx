@@ -21,7 +21,7 @@ export default function CreatePage() {
 
   // ── Stage control ──
   const [stage, setStage] = useState<
-    "select-type" | "extracting" | "chat" | "storyboard" | "generating" | "done"
+    "select-type" | "extracting" | "suggestions" | "chat" | "storyboard" | "generating" | "done"
   >("select-type");
   const [branchType, setBranchType] = useState("");
   const [error, setError] = useState("");
@@ -29,6 +29,12 @@ export default function CreatePage() {
   // ── Stage 1: Asset extraction ──
   const [assets, setAssets] = useState<ExtractedAssets | null>(null);
   const [extractionStep, setExtractionStep] = useState("");
+
+  // ── Stage 1.5: Suggestions ──
+  const [suggestions, setSuggestions] = useState<
+    Array<{ id: string; title: string; description: string; characters: string[]; tone: string; icon: string }>
+  >([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
 
   // ── Stage 2: Multi-turn chat ──
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -97,16 +103,40 @@ export default function CreatePage() {
       setExtractionStep("Parsing assets...");
       const data = await res.json();
       setAssets(data.assets);
-      setStage("chat");
 
-      // Send initial greeting
-      const greeting = `I want to create an alternate ${type} for "${episode.title}". What are my options given the characters and setting?`;
-      await sendChatMessage(greeting, data.assets, type);
+      // Fetch suggestions
+      setStage("suggestions");
+      setSuggestionsLoading(true);
+      try {
+        const sugRes = await fetch("/api/suggest-alternates", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assets: data.assets, branchType: type }),
+        });
+        if (sugRes.ok) {
+          const sugData = await sugRes.json();
+          setSuggestions(sugData.suggestions || []);
+        }
+      } catch {
+        // Suggestions failed — that's okay, user can still go custom
+      } finally {
+        setSuggestionsLoading(false);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       setError(msg);
       setStage("select-type");
     }
+  }
+
+  async function handlePickSuggestion(suggestion: { title: string; description: string }) {
+    setStage("chat");
+    const message = `I want to create: "${suggestion.title}" — ${suggestion.description}`;
+    await sendChatMessage(message, assets!, branchType);
+  }
+
+  function handleCustomIdea() {
+    setStage("chat");
   }
 
   async function sendChatMessage(
@@ -315,13 +345,15 @@ export default function CreatePage() {
       ? 0
       : stage === "extracting"
         ? 1
-        : stage === "chat"
+        : stage === "suggestions"
           ? 2
-          : stage === "storyboard"
-            ? 3
-            : stage === "generating" || stage === "done"
-              ? 4
-              : 0;
+          : stage === "chat"
+            ? 2
+            : stage === "storyboard"
+              ? 3
+              : stage === "generating" || stage === "done"
+                ? 4
+                : 0;
 
   const stageLabels = [
     "Branch Type",
@@ -484,6 +516,134 @@ export default function CreatePage() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* ── Stage: Suggestions ── */}
+        {stage === "suggestions" && assets && (
+          <div className="fade-up">
+            {/* Compact assets summary */}
+            <div className="mb-8 flex items-center gap-4 text-[11px] text-white/30">
+              <span className="flex items-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                {assets.characters.length} characters
+              </span>
+              <span className="flex items-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>
+                {assets.environments.length} environments
+              </span>
+              <span className="flex items-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                {assets.objects.length} objects
+              </span>
+            </div>
+
+            <h2 className="text-[18px] font-bold mb-1">Choose a direction</h2>
+            <p className="text-[11px] text-white/30 mb-6">
+              Pick a suggested alternate, or write your own from scratch.
+            </p>
+
+            {suggestionsLoading ? (
+              <div className="grid grid-cols-2 gap-3">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="h-[140px] bg-[#181818] border border-white/5 shimmer" />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                {suggestions.map((s) => {
+                  const iconMap: Record<string, React.ReactNode> = {
+                    diverge: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M7 3v18M3 7l4-4 4 4M17 3v18M13 17l4 4 4-4" />
+                      </svg>
+                    ),
+                    reverse: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                      </svg>
+                    ),
+                    add: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                    ),
+                    twist: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                      </svg>
+                    ),
+                  };
+
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => handlePickSuggestion(s)}
+                      className="group relative text-left p-5 bg-[#141414] border border-white/[0.06] hover:border-white/20 hover:bg-[#1a1a1a] transition-all overflow-hidden"
+                    >
+                      {/* Subtle gradient accent on hover */}
+                      <div className="absolute inset-0 bg-gradient-to-br from-white/[0.02] to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                      <div className="relative">
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <div className="w-7 h-7 flex items-center justify-center bg-white/[0.06] text-white/40 group-hover:bg-white/10 group-hover:text-white/70 transition-all">
+                            {iconMap[s.icon] || iconMap.diverge}
+                          </div>
+                          <span className="text-[9px] tracking-[0.15em] uppercase text-white/20 group-hover:text-white/40 transition-colors">
+                            {s.tone}
+                          </span>
+                        </div>
+
+                        <h3 className="text-[14px] font-bold mb-1.5 group-hover:text-white transition-colors">
+                          {s.title}
+                        </h3>
+                        <p className="text-[11px] text-white/35 leading-relaxed mb-3 group-hover:text-white/50 transition-colors">
+                          {s.description}
+                        </p>
+
+                        <div className="flex flex-wrap gap-1.5">
+                          {s.characters.slice(0, 3).map((c, i) => (
+                            <span key={i} className="px-2 py-0.5 text-[9px] bg-white/[0.04] text-white/25 group-hover:bg-white/[0.08] group-hover:text-white/40 transition-colors">
+                              {c}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Arrow indicator */}
+                      <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-all translate-x-1 group-hover:translate-x-0">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/40">
+                          <polyline points="9 18 15 12 9 6" />
+                        </svg>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Custom idea option */}
+            <button
+              onClick={handleCustomIdea}
+              className="w-full group flex items-center gap-4 p-4 bg-[#111] border border-dashed border-white/[0.08] hover:border-white/20 hover:bg-[#161616] transition-all"
+            >
+              <div className="w-9 h-9 flex items-center justify-center bg-white/[0.04] group-hover:bg-white/10 transition-colors">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-white/30 group-hover:text-white/60 transition-colors">
+                  <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                </svg>
+              </div>
+              <div className="text-left flex-1">
+                <div className="text-[13px] font-semibold text-white/60 group-hover:text-white/90 transition-colors">
+                  Write your own
+                </div>
+                <div className="text-[10px] text-white/20 group-hover:text-white/35 transition-colors">
+                  Describe a custom alternate in the chat
+                </div>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/15 group-hover:text-white/40 transition-colors">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
           </div>
         )}
 
@@ -946,6 +1106,7 @@ export default function CreatePage() {
                     setStage("select-type");
                     setBranchType("");
                     setAssets(null);
+                    setSuggestions([]);
                     setMessages([]);
                     setStoryboard(null);
                     setGeneratedVideos({});

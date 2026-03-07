@@ -3,9 +3,12 @@ import { fal } from "@fal-ai/client";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+
 export const maxDuration = 300;
 
 fal.config({ credentials: process.env.FAL_KEY });
+
+type VideoModel = "grok" | "kling";
 
 async function uploadImageToFal(relativePath: string): Promise<string | null> {
   const absPath = path.join(process.cwd(), "public", relativePath);
@@ -23,6 +26,93 @@ async function uploadImageToFal(relativePath: string): Promise<string | null> {
   return url;
 }
 
+function logQueue(panelId: string) {
+  return {
+    logs: true as const,
+    onQueueUpdate: (update: any) => {
+      console.log(`[${panelId}] Queue: ${update.status}`);
+      if (update.status === "IN_PROGRESS" && update.logs) {
+        update.logs.map((log: any) => log.message).forEach((msg: string) => console.log(`[${panelId}] ${msg}`));
+      }
+    },
+  };
+}
+
+// ── Grok Imagine Video ──
+async function generateWithGrok(
+  panelId: string,
+  visualPrompt: string,
+  duration: number,
+  firstFrameUrl: string | null,
+) {
+  if (firstFrameUrl) {
+    console.log(`[${panelId}] Grok Imagine: image-to-video (start frame only)`);
+    return await fal.subscribe("xai/grok-imagine-video/image-to-video", {
+      input: {
+        prompt: visualPrompt,
+        image_url: firstFrameUrl,
+        duration: Math.min(duration, 10),
+        aspect_ratio: "16:9",
+        resolution: "720p",
+      },
+      ...logQueue(panelId),
+    });
+  }
+
+  console.log(`[${panelId}] Grok Imagine: text-to-video`);
+  return await fal.subscribe("xai/grok-imagine-video/text-to-video", {
+    input: {
+      prompt: visualPrompt,
+      duration: Math.min(duration, 10),
+      aspect_ratio: "16:9",
+      resolution: "720p",
+    },
+    ...logQueue(panelId),
+  });
+}
+
+// ── Kling 3.0 (supports start + end frames, 3-15s) ──
+async function generateWithKling(
+  panelId: string,
+  visualPrompt: string,
+  duration: number,
+  firstFrameUrl: string | null,
+  lastFrameUrl: string | null,
+) {
+  const clampedDuration = String(Math.max(3, Math.min(duration, 15)));
+
+  if (firstFrameUrl && lastFrameUrl) {
+    console.log(`[${panelId}] Kling 3.0: start+end frame interpolation (${clampedDuration}s)`);
+    return await fal.subscribe("fal-ai/kling-video/v3/standard/image-to-video", {
+      input: {
+        prompt: visualPrompt,
+        start_image_url: firstFrameUrl,
+        end_image_url: lastFrameUrl,
+        duration: clampedDuration,
+        aspect_ratio: "16:9",
+      },
+      ...logQueue(panelId),
+    });
+  }
+
+  if (firstFrameUrl) {
+    console.log(`[${panelId}] Kling 3.0: start frame only (${clampedDuration}s)`);
+    return await fal.subscribe("fal-ai/kling-video/v3/standard/image-to-video", {
+      input: {
+        prompt: visualPrompt,
+        start_image_url: firstFrameUrl,
+        duration: clampedDuration,
+        aspect_ratio: "16:9",
+      },
+      ...logQueue(panelId),
+    });
+  }
+
+  // No frames, fall back to Grok text-to-video
+  console.log(`[${panelId}] No frames provided, falling back to Grok text-to-video`);
+  return await generateWithGrok(panelId, visualPrompt, duration, null);
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
@@ -31,12 +121,14 @@ export async function POST(req: NextRequest) {
     duration,
     firstFramePath,
     lastFramePath,
+    model = "grok",
   } = body as {
     panelId: string;
     visualPrompt: string;
     duration: number;
     firstFramePath?: string;
     lastFramePath?: string;
+    model?: VideoModel;
   };
 
   try {
@@ -45,54 +137,20 @@ export async function POST(req: NextRequest) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    // Mode 1: Image-to-video with start frame via Grok Imagine Video
-    if (firstFramePath) {
-      const imageUrl = await uploadImageToFal(firstFramePath);
+    // Upload frames in parallel
+    const [firstFrameUrl, lastFrameUrl] = await Promise.all([
+      firstFramePath ? uploadImageToFal(firstFramePath) : null,
+      lastFramePath ? uploadImageToFal(lastFramePath) : null,
+    ]);
 
-      if (imageUrl) {
-        console.log(`[${panelId}] Grok Imagine Video: image-to-video`);
-        const result = await fal.subscribe("xai/grok-imagine-video/image-to-video", {
-          input: {
-            prompt: visualPrompt,
-            image_url: imageUrl,
-            duration: Math.min(duration, 10),
-            aspect_ratio: "16:9",
-            resolution: "720p",
-          },
-          logs: true,
-          onQueueUpdate: (update) => {
-            console.log(`[${panelId}] Queue: ${update.status}`);
-            if (update.status === "IN_PROGRESS" && update.logs) {
-              update.logs.map((log) => log.message).forEach((msg) => console.log(`[${panelId}] ${msg}`));
-            }
-          },
-        });
-
-        console.log(`[${panelId}] Grok result:`, JSON.stringify(result.data, null, 2));
-        return await downloadAndSave(result.data, panelId, outputDir);
-      }
-      console.log(`[${panelId}] Failed to upload frame, falling back to text-to-video`);
+    let result;
+    if (model === "kling") {
+      result = await generateWithKling(panelId, visualPrompt, duration, firstFrameUrl, lastFrameUrl);
+    } else {
+      result = await generateWithGrok(panelId, visualPrompt, duration, firstFrameUrl);
     }
 
-    // Mode 2: Text-to-video fallback via Grok Imagine Video
-    console.log(`[${panelId}] Grok Imagine Video: text-to-video`);
-    const result = await fal.subscribe("xai/grok-imagine-video/text-to-video", {
-      input: {
-        prompt: visualPrompt,
-        duration: Math.min(duration, 10),
-        aspect_ratio: "16:9",
-        resolution: "720p",
-      },
-      logs: true,
-      onQueueUpdate: (update) => {
-        console.log(`[${panelId}] Queue: ${update.status}`);
-        if (update.status === "IN_PROGRESS" && update.logs) {
-          update.logs.map((log) => log.message).forEach((msg) => console.log(`[${panelId}] ${msg}`));
-        }
-      },
-    });
-
-    console.log(`[${panelId}] Grok result:`, JSON.stringify(result.data, null, 2));
+    console.log(`[${panelId}] ${model} result:`, JSON.stringify(result.data, null, 2));
     return await downloadAndSave(result.data, panelId, outputDir);
   } catch (error: unknown) {
     const errObj = error as any;

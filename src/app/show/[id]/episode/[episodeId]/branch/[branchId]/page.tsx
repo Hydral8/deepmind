@@ -28,6 +28,8 @@ export default function BranchPage() {
   const [generated, setGenerated] = useState<GeneratedBranch | null>(null);
   const [activePanel, setActivePanel] = useState<string | null>(null);
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
+  const [generatingAll, setGeneratingAll] = useState(false);
+  const [videoModel, setVideoModel] = useState<"grok" | "kling">("grok");
 
   useEffect(() => {
     fetch(`/branches/${branchId}.json`)
@@ -49,6 +51,15 @@ export default function BranchPage() {
       .catch(() => {});
   }, [branchId]);
 
+  // Persist video state to branch JSON
+  const persistVideos = useCallback(async (videos: Record<string, { videoUrl: string; status: string }>) => {
+    await fetch("/api/branches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ branchId, videos }),
+    });
+  }, [branchId]);
+
   const handleGeneratePanel = useCallback(async (panelId: string) => {
     if (!generated) return;
     const panel = generated.storyboard.panels.find((p) => p.id === panelId);
@@ -67,29 +78,107 @@ export default function BranchPage() {
           duration: panel.duration,
           firstFramePath: panelImages?.startImage,
           lastFramePath: panelImages?.endImage,
+          model: videoModel,
         }),
       });
 
       const data = await res.json();
       if (res.ok && data.videoUrl) {
+        const newVideos = {
+          ...generated.videos,
+          [panelId]: { videoUrl: data.videoUrl, status: "done" },
+        };
         setGenerated((prev) => {
           if (!prev) return prev;
-          return {
-            ...prev,
-            videos: {
-              ...prev.videos,
-              [panelId]: { videoUrl: data.videoUrl, status: "done" },
-            },
-          };
+          return { ...prev, videos: newVideos };
         });
         setActivePanel(panelId);
+        // Persist to disk
+        await persistVideos(newVideos);
       }
     } catch {
       // Silently fail
     } finally {
       setGenerating((prev) => ({ ...prev, [panelId]: false }));
     }
-  }, [generated]);
+  }, [generated, persistVideos, videoModel]);
+
+  // Generate all videos sequentially: panel1, transition1→2, panel2, transition2→3, panel3...
+  const handleGenerateAll = useCallback(async () => {
+    if (!generated) return;
+    const panels = generated.storyboard.panels;
+    setGeneratingAll(true);
+
+    const allVideos = { ...generated.videos };
+
+    for (let i = 0; i < panels.length; i++) {
+      const panel = panels[i];
+      const panelImages = generated.images?.[panel.id];
+
+      // Generate panel video (start frame → end frame)
+      setGenerating((prev) => ({ ...prev, [panel.id]: true }));
+      setActivePanel(panel.id);
+      try {
+        const res = await fetch("/api/generate-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            panelId: panel.id,
+            visualPrompt: panel.visualPrompt || panel.sceneDescription,
+            duration: panel.duration,
+            firstFramePath: panelImages?.startImage,
+            lastFramePath: panelImages?.endImage,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.videoUrl) {
+          allVideos[panel.id] = { videoUrl: data.videoUrl, status: "done" };
+          setGenerated((prev) => prev ? { ...prev, videos: { ...allVideos } } : prev);
+        }
+      } catch {
+        // continue to next
+      } finally {
+        setGenerating((prev) => ({ ...prev, [panel.id]: false }));
+      }
+
+      // Generate transition to next panel (current end frame → next start frame)
+      if (i < panels.length - 1) {
+        const nextPanel = panels[i + 1];
+        const nextImages = generated.images?.[nextPanel.id];
+        const transitionId = `transition-${panel.id}-${nextPanel.id}`;
+
+        if (panelImages?.endImage && nextImages?.startImage) {
+          setGenerating((prev) => ({ ...prev, [transitionId]: true }));
+          try {
+            const res = await fetch("/api/generate-video", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                panelId: transitionId,
+                visualPrompt: `Smooth cinematic transition. ${panel.sceneDescription} transitions seamlessly into ${nextPanel.sceneDescription}. Continuous camera movement, matching lighting and color grading.`,
+                duration: 4,
+                firstFramePath: panelImages.endImage,
+                lastFramePath: nextImages.startImage,
+              }),
+            });
+            const data = await res.json();
+            if (res.ok && data.videoUrl) {
+              allVideos[transitionId] = { videoUrl: data.videoUrl, status: "done" };
+              setGenerated((prev) => prev ? { ...prev, videos: { ...allVideos } } : prev);
+            }
+          } catch {
+            // continue
+          } finally {
+            setGenerating((prev) => ({ ...prev, [transitionId]: false }));
+          }
+        }
+      }
+    }
+
+    // Persist all videos
+    await persistVideos(allVideos);
+    setGeneratingAll(false);
+  }, [generated, persistVideos, videoModel]);
 
   if (!show || !episode || !branch) {
     return (
@@ -199,6 +288,56 @@ export default function BranchPage() {
               </div>
             )}
 
+            {/* Video model selector + Generate All Videos button */}
+            <div className="mb-6 space-y-3">
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] tracking-[0.15em] uppercase text-white/30">Video Model</span>
+                <div className="flex bg-[#181818] border border-white/10 overflow-hidden">
+                  <button
+                    onClick={() => setVideoModel("grok")}
+                    className={`px-4 py-2 text-[10px] tracking-[0.1em] uppercase transition-colors ${
+                      videoModel === "grok"
+                        ? "bg-white text-black font-semibold"
+                        : "text-white/40 hover:text-white/60"
+                    }`}
+                  >
+                    Grok Imagine
+                    <span className="block text-[8px] font-normal opacity-60 mt-0.5">Start frame only</span>
+                  </button>
+                  <button
+                    onClick={() => setVideoModel("kling")}
+                    className={`px-4 py-2 text-[10px] tracking-[0.1em] uppercase transition-colors ${
+                      videoModel === "kling"
+                        ? "bg-white text-black font-semibold"
+                        : "text-white/40 hover:text-white/60"
+                    }`}
+                  >
+                    Kling 3.0
+                    <span className="block text-[8px] font-normal opacity-60 mt-0.5">Start + End frames</span>
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={handleGenerateAll}
+                disabled={generatingAll}
+                className="w-full py-3 text-[11px] font-semibold tracking-[0.15em] uppercase bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-30 flex items-center justify-center gap-2"
+              >
+                {generatingAll ? (
+                  <>
+                    <div className="w-3.5 h-3.5 rounded-full border-2 border-black/20 border-t-black/80 animate-spin" />
+                    Generating All Videos...
+                  </>
+                ) : (
+                  <>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <polygon points="5 3 19 12 5 21 5 3" />
+                    </svg>
+                    Generate All Videos
+                  </>
+                )}
+              </button>
+            </div>
+
             {/* Storyboard panels */}
             <div className="mb-10">
               <h2 className="text-[12px] font-semibold tracking-[0.2em] uppercase text-white/50 mb-4">
@@ -207,7 +346,7 @@ export default function BranchPage() {
               <div className="space-y-3 relative">
                 <div className="absolute left-[13px] top-0 bottom-0 w-px bg-gradient-to-b from-white/20 via-white/10 to-transparent" />
 
-                {generated.storyboard.panels.map((panel) => {
+                {generated.storyboard.panels.map((panel, i) => {
                   const video = generated.videos[panel.id];
                   const panelImages = generated.images?.[panel.id];
                   const pStart = panelImages?.startImage;
@@ -215,131 +354,156 @@ export default function BranchPage() {
                   const isActive = activePanel === panel.id;
                   const isGenerating = generating[panel.id];
 
+                  // Check for transition video to next panel
+                  const nextPanel = generated.storyboard.panels[i + 1];
+                  const transitionId = nextPanel ? `transition-${panel.id}-${nextPanel.id}` : null;
+                  const transitionVideo = transitionId ? generated.videos[transitionId] : null;
+
                   return (
-                    <div
-                      key={panel.id}
-                      className="relative pl-10 cursor-pointer"
-                      onClick={() => setActivePanel(panel.id)}
-                    >
+                    <div key={panel.id}>
                       <div
-                        className={`absolute left-[9px] top-5 w-[9px] h-[9px] rounded-full border-2 border-[#0e0e0e] ${
-                          isActive ? "bg-white" : "bg-white/40"
-                        }`}
-                      />
-
-                      <div
-                        className={`p-5 transition-colors ${
-                          isActive
-                            ? "bg-[#1f1f1f] border border-white/15"
-                            : "bg-[#181818] hover:bg-[#1a1a1a]"
-                        }`}
+                        className="relative pl-10 cursor-pointer"
+                        onClick={() => setActivePanel(panel.id)}
                       >
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-[10px] font-semibold text-white/50 tracking-[0.15em] uppercase">
-                            Panel {panel.order}
-                          </span>
-                          {video?.status === "done" && (
-                            <span className="text-[8px] px-1.5 py-0.5 bg-green-500/10 text-green-400/60 tracking-[0.1em] uppercase">
-                              Generated
-                            </span>
-                          )}
-                          <span className="text-[9px] text-white/15">{panel.duration}s</span>
-                          {panel.characters.map((c, i) => (
-                            <span key={i} className="px-2 py-0.5 text-[9px] bg-white/5 text-white/30">
-                              {c}
-                            </span>
-                          ))}
+                        <div
+                          className={`absolute left-[9px] top-5 w-[9px] h-[9px] rounded-full border-2 border-[#0e0e0e] ${
+                            isActive ? "bg-white" : "bg-white/40"
+                          }`}
+                        />
 
-                          {/* Generate button */}
-                          {(!video || video.status !== "done") && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleGeneratePanel(panel.id);
-                              }}
-                              disabled={isGenerating}
-                              className="ml-auto px-3 py-1 text-[9px] font-semibold tracking-[0.1em] uppercase bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-30 flex items-center gap-1.5"
-                            >
-                              {isGenerating ? (
-                                <>
-                                  <div className="w-3 h-3 rounded-full border border-black/20 border-t-black/80 animate-spin" />
-                                  Generating...
-                                </>
-                              ) : (
-                                <>
-                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                                    <polygon points="5 3 19 12 5 21 5 3" />
-                                  </svg>
-                                  Generate Video
-                                </>
+                        <div
+                          className={`p-5 transition-colors ${
+                            isActive
+                              ? "bg-[#1f1f1f] border border-white/15"
+                              : "bg-[#181818] hover:bg-[#1a1a1a]"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-[10px] font-semibold text-white/50 tracking-[0.15em] uppercase">
+                              Panel {panel.order}
+                            </span>
+                            {video?.status === "done" && (
+                              <span className="text-[8px] px-1.5 py-0.5 bg-green-500/10 text-green-400/60 tracking-[0.1em] uppercase">
+                                Generated
+                              </span>
+                            )}
+                            <span className="text-[9px] text-white/15">{panel.duration}s</span>
+                            {panel.characters.map((c, ci) => (
+                              <span key={ci} className="px-2 py-0.5 text-[9px] bg-white/5 text-white/30">
+                                {c}
+                              </span>
+                            ))}
+
+                            {/* Generate button */}
+                            {(!video || video.status !== "done") && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleGeneratePanel(panel.id);
+                                }}
+                                disabled={isGenerating}
+                                className="ml-auto px-3 py-1 text-[9px] font-semibold tracking-[0.1em] uppercase bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-30 flex items-center gap-1.5"
+                              >
+                                {isGenerating ? (
+                                  <>
+                                    <div className="w-3 h-3 rounded-full border border-black/20 border-t-black/80 animate-spin" />
+                                    Generating...
+                                  </>
+                                ) : (
+                                  <>
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                                      <polygon points="5 3 19 12 5 21 5 3" />
+                                    </svg>
+                                    Generate Video
+                                  </>
+                                )}
+                              </button>
+                            )}
+
+                            {video?.status === "done" && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleGeneratePanel(panel.id);
+                                }}
+                                disabled={isGenerating}
+                                className="ml-auto px-3 py-1 text-[9px] tracking-[0.1em] uppercase text-white/25 hover:text-white/50 border border-white/10 hover:border-white/20 transition-colors disabled:opacity-30"
+                              >
+                                {isGenerating ? "Regenerating..." : "Regenerate"}
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Inline frame thumbnails */}
+                          {(pStart || pEnd) && (
+                            <div className="flex gap-2 mb-3">
+                              {pStart && (
+                                <div className="w-[120px] flex-shrink-0">
+                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                    <img src={pStart} alt="In" className="w-full h-full object-cover" />
+                                  </div>
+                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">In</span>
+                                </div>
                               )}
-                            </button>
+                              {pEnd && (
+                                <div className="w-[120px] flex-shrink-0">
+                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                    <img src={pEnd} alt="Out" className="w-full h-full object-cover" />
+                                  </div>
+                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">Out</span>
+                                </div>
+                              )}
+                            </div>
                           )}
 
-                          {video?.status === "done" && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleGeneratePanel(panel.id);
-                              }}
-                              disabled={isGenerating}
-                              className="ml-auto px-3 py-1 text-[9px] tracking-[0.1em] uppercase text-white/25 hover:text-white/50 border border-white/10 hover:border-white/20 transition-colors disabled:opacity-30"
-                            >
-                              {isGenerating ? "Regenerating..." : "Regenerate"}
-                            </button>
+                          {/* Inline video if generated */}
+                          {video?.status === "done" && video.videoUrl && (
+                            <div className="mb-3 aspect-video bg-black border border-white/10 overflow-hidden">
+                              <video
+                                key={video.videoUrl}
+                                controls
+                                className="w-full h-full"
+                                src={video.videoUrl}
+                              />
+                            </div>
                           )}
-                        </div>
 
-                        {/* Inline frame thumbnails */}
-                        {(pStart || pEnd) && (
-                          <div className="flex gap-2 mb-3">
-                            {pStart && (
-                              <div className="w-[120px] flex-shrink-0">
-                                <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                                  <img src={pStart} alt="In" className="w-full h-full object-cover" />
-                                </div>
-                                <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">In</span>
-                              </div>
-                            )}
-                            {pEnd && (
-                              <div className="w-[120px] flex-shrink-0">
-                                <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                                  <img src={pEnd} alt="Out" className="w-full h-full object-cover" />
-                                </div>
-                                <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">Out</span>
-                              </div>
-                            )}
+                          <p className="text-[13px] text-white/55 mb-2">
+                            {panel.sceneDescription}
+                          </p>
+                          {panel.dialogue && (
+                            <div className="pl-4 border-l border-white/15 py-1 mb-2">
+                              <p className="text-[12px] italic text-white/30">
+                                &ldquo;{panel.dialogue}&rdquo;
+                              </p>
+                            </div>
+                          )}
+                          <div className="flex flex-wrap gap-3 text-[10px] text-white/20">
+                            <span>Camera: {panel.cameraAngle}</span>
+                            <span>Movement: {panel.cameraMovement}</span>
+                            <span>Mood: {panel.mood}</span>
                           </div>
-                        )}
-
-                        {/* Inline video if generated */}
-                        {video?.status === "done" && video.videoUrl && (
-                          <div className="mb-3 aspect-video bg-black border border-white/10 overflow-hidden">
-                            <video
-                              key={video.videoUrl}
-                              controls
-                              className="w-full h-full"
-                              src={video.videoUrl}
-                            />
-                          </div>
-                        )}
-
-                        <p className="text-[13px] text-white/55 mb-2">
-                          {panel.sceneDescription}
-                        </p>
-                        {panel.dialogue && (
-                          <div className="pl-4 border-l border-white/15 py-1 mb-2">
-                            <p className="text-[12px] italic text-white/30">
-                              &ldquo;{panel.dialogue}&rdquo;
-                            </p>
-                          </div>
-                        )}
-                        <div className="flex flex-wrap gap-3 text-[10px] text-white/20">
-                          <span>Camera: {panel.cameraAngle}</span>
-                          <span>Movement: {panel.cameraMovement}</span>
-                          <span>Mood: {panel.mood}</span>
                         </div>
                       </div>
+
+                      {/* Transition video between panels */}
+                      {transitionVideo?.status === "done" && transitionVideo.videoUrl && (
+                        <div className="pl-10 my-2">
+                          <div className="flex items-center gap-2 mb-1">
+                            <div className="h-px flex-1 bg-white/10" />
+                            <span className="text-[8px] text-white/20 tracking-[0.15em] uppercase">Transition</span>
+                            <div className="h-px flex-1 bg-white/10" />
+                          </div>
+                          <div className="aspect-video bg-black border border-white/5 overflow-hidden">
+                            <video
+                              key={transitionVideo.videoUrl}
+                              controls
+                              className="w-full h-full"
+                              src={transitionVideo.videoUrl}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

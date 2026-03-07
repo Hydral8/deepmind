@@ -114,6 +114,45 @@ Return a JSON array:
 Return ONLY valid JSON, no markdown.`;
 }
 
+// ── Alternate Suggestions ──
+
+export function buildSuggestionsPrompt(assets: ExtractedAssets, branchType: string): string {
+  const characterList = assets.characters
+    .map((c) => `- ${c.name} (${c.role}): ${c.description}`)
+    .join("\n");
+
+  return `You are a showrunner for this production. Based on the extracted assets, generate exactly 4 compelling alternate ${branchType} ideas that fans would actually want to see.
+
+SOURCE MATERIAL:
+Characters: ${characterList}
+Plot: ${assets.plot.summary}
+Key events: ${assets.plot.keyEvents.join(", ")}
+Themes: ${assets.plot.themes.join(", ")}
+Genre: ${assets.seriesContext.genre}
+Tone: ${assets.seriesContext.tone}
+World rules: ${assets.seriesContext.worldRules}
+
+RULES:
+- Each suggestion must be specific and filmable — not vague "what if" hand-waving
+- Root every idea in existing characters, relationships, and world rules
+- Vary the emotional range: one darker, one hopeful, one surprising, one that subverts expectations
+- Each should feel like a legitimate creative choice the writers' room debated
+- Keep titles punchy (2-5 words)
+- Descriptions should be 1-2 sentences that hook the reader immediately
+
+Return ONLY valid JSON:
+[
+  {
+    "id": "suggestion-1",
+    "title": "Short punchy title",
+    "description": "1-2 sentence hook that makes the viewer NEED to see this version",
+    "characters": ["main characters involved"],
+    "tone": "emotional tone in 1-2 words",
+    "icon": "one of: diverge, reverse, add, twist"
+  }
+]`;
+}
+
 // ── Chat / Creative Direction ──
 
 export function buildChatSystemPrompt(assets: ExtractedAssets, branchType: string): string {
