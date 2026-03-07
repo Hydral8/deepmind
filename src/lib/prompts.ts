@@ -301,6 +301,8 @@ ${VISUAL_REALISM_DIRECTIVE}
 
 ${ANTI_AI_ARTIFACTS}
 
+CRITICAL: Each character may appear AT MOST ONCE in the frame. NEVER show the same person twice. No mirrors, reflections, clones, or duplicate figures of any character.
+
 Output: 16:9 aspect ratio. Photorealistic. No watermarks. No text overlays. No borders.`;
 }
 

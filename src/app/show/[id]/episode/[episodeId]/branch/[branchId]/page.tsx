@@ -57,6 +57,7 @@ export default function BranchPage() {
     setGenerating((prev) => ({ ...prev, [panelId]: true }));
 
     try {
+      const panelImages = generated.images?.[panelId];
       const res = await fetch("/api/generate-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -64,6 +65,8 @@ export default function BranchPage() {
           panelId: panel.id,
           visualPrompt: panel.visualPrompt || panel.sceneDescription,
           duration: panel.duration,
+          firstFramePath: panelImages?.startImage,
+          lastFramePath: panelImages?.endImage,
         }),
       });
 

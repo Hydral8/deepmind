@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGeminiClient } from "@/lib/gemini";
+import { fal } from "@fal-ai/client";
 import { StoryboardPanel, ExtractedAssets } from "@/lib/types";
 import { buildPanelImagePrompt } from "@/lib/prompts";
 import * as fs from "fs";
@@ -8,20 +8,7 @@ import { execSync } from "child_process";
 
 export const maxDuration = 120;
 
-// Load an image file as a Gemini inline data part
-function loadImagePart(relativePath: string) {
-  const absPath = path.join(process.cwd(), "public", relativePath);
-  if (!fs.existsSync(absPath)) return null;
-  const data = fs.readFileSync(absPath);
-  const ext = path.extname(absPath).toLowerCase();
-  const mimeType = ext === ".png" ? "image/png" : "image/jpeg";
-  return {
-    inlineData: {
-      mimeType,
-      data: data.toString("base64"),
-    },
-  };
-}
+fal.config({ credentials: process.env.FAL_KEY });
 
 export async function POST(req: NextRequest) {
   try {
@@ -31,8 +18,6 @@ export async function POST(req: NextRequest) {
       videoPath?: string;
       branchId: string;
     };
-
-    const ai = getGeminiClient();
 
     const outputDir = path.join(process.cwd(), "public", "branches", "images", branchId);
     if (!fs.existsSync(outputDir)) {
@@ -69,105 +54,75 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Collect reference image parts from extracted assets
-    const referenceImageParts: { inlineData: { mimeType: string; data: string } }[] = [];
+    // Build reference descriptions from assets
     const referenceDescriptions: string[] = [];
 
-    // Characters in this panel
     for (const charName of panel.characters) {
       const charAsset = assets.characters.find(
         (c) => c.name.toLowerCase() === charName.toLowerCase()
       );
-      if (charAsset?.imagePath) {
-        const part = loadImagePart(charAsset.imagePath);
-        if (part) {
-          referenceImageParts.push(part);
-          referenceDescriptions.push(
-            `CHARACTER "${charAsset.name}": ${charAsset.description}. Traits: ${charAsset.keyTraits.join(", ")}. Multi-view: ${charAsset.multiviewDescription}`
-          );
-        }
+      if (charAsset) {
+        referenceDescriptions.push(
+          `CHARACTER "${charAsset.name}": ${charAsset.description}. Traits: ${charAsset.keyTraits.join(", ")}. Multi-view: ${charAsset.multiviewDescription}`
+        );
       }
     }
 
-    // Environment
     for (const env of assets.environments) {
-      if (panel.environment.toLowerCase().includes(env.name.toLowerCase().split(",")[0]) && env.imagePath) {
-        const part = loadImagePart(env.imagePath);
-        if (part) {
-          referenceImageParts.push(part);
-          referenceDescriptions.push(
-            `ENVIRONMENT "${env.name}": ${env.description}. Lighting: ${env.lighting}. Mood: ${env.mood}`
-          );
-        }
+      if (panel.environment.toLowerCase().includes(env.name.toLowerCase().split(",")[0])) {
+        referenceDescriptions.push(
+          `ENVIRONMENT "${env.name}": ${env.description}. Lighting: ${env.lighting}. Mood: ${env.mood}`
+        );
         break;
       }
     }
 
-    // Objects
-    for (const obj of assets.objects) {
-      if (obj.imagePath) {
-        const part = loadImagePart(obj.imagePath);
-        if (part) {
-          referenceImageParts.push(part);
-          referenceDescriptions.push(
-            `OBJECT "${obj.name}": ${obj.description}. Significance: ${obj.significance}`
-          );
-        }
-      }
-    }
-
+    // Generate start frame with Grok Imagine
     const startPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "start");
+    console.log(`[${panel.id}] Generating start frame with Grok Imagine...`);
 
-    const startParts = [
-      ...referenceImageParts,
-      { text: startPrompt },
-    ];
-
-    const startResponse = await ai.models.generateContent({
-      model: "gemini-3.1-flash-image-preview",
-      contents: [{ role: "user", parts: startParts }],
-      config: {
-        responseModalities: ["TEXT", "IMAGE"],
+    const startResult = await fal.subscribe("xai/grok-imagine-image", {
+      input: {
+        prompt: startPrompt,
+        num_images: 1,
+        aspect_ratio: "16:9",
+        output_format: "png",
       },
     });
 
-    if (startResponse.candidates?.[0]?.content?.parts) {
-      for (const part of startResponse.candidates[0].content.parts) {
-        if (part.inlineData) {
-          const buffer = Buffer.from(part.inlineData.data!, "base64");
-          const filename = `${panel.id}-start.png`;
-          fs.writeFileSync(path.join(outputDir, filename), buffer);
-          results.startImage = `/branches/images/${branchId}/${filename}`;
-          break;
-        }
-      }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const startImageUrl = (startResult.data as any)?.images?.[0]?.url;
+    if (startImageUrl) {
+      const imgResponse = await fetch(startImageUrl);
+      const buffer = Buffer.from(await imgResponse.arrayBuffer());
+      const filename = `${panel.id}-start.png`;
+      fs.writeFileSync(path.join(outputDir, filename), buffer);
+      results.startImage = `/branches/images/${branchId}/${filename}`;
+      console.log(`[${panel.id}] Start frame saved: ${filename}`);
     }
 
+    // Generate end frame with Grok Imagine
     const endPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "end");
+    console.log(`[${panel.id}] Generating end frame with Grok Imagine...`);
 
-    const endParts = [
-      ...referenceImageParts,
-      { text: endPrompt },
-    ];
-
-    const endResponse = await ai.models.generateContent({
-      model: "gemini-3.1-flash-image-preview",
-      contents: [{ role: "user", parts: endParts }],
-      config: {
-        responseModalities: ["TEXT", "IMAGE"],
+    const endResult = await fal.subscribe("xai/grok-imagine-image", {
+      input: {
+        prompt: endPrompt,
+        num_images: 1,
+        aspect_ratio: "16:9",
+        output_format: "png",
       },
     });
 
-    if (endResponse.candidates?.[0]?.content?.parts) {
-      for (const part of endResponse.candidates[0].content.parts) {
-        if (part.inlineData) {
-          const buffer = Buffer.from(part.inlineData.data!, "base64");
-          const filename = `${panel.id}-end.png`;
-          fs.writeFileSync(path.join(outputDir, filename), buffer);
-          results.endImage = `/branches/images/${branchId}/${filename}`;
-          break;
-        }
-      }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const endImageUrl = (endResult.data as any)?.images?.[0]?.url;
+    if (endImageUrl) {
+      const imgResponse = await fetch(endImageUrl);
+      const buffer = Buffer.from(await imgResponse.arrayBuffer());
+      const filename = `${panel.id}-end.png`;
+      fs.writeFileSync(path.join(outputDir, filename), buffer);
+      results.endImage = `/branches/images/${branchId}/${filename}`;
+      console.log(`[${panel.id}] End frame saved: ${filename}`);
     }
 
     return NextResponse.json({ panelId: panel.id, ...results, source: "generated" });

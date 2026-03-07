@@ -57,7 +57,9 @@
     "musicPrompt": "Somber orchestral rising to triumphant, bittersweet strings",
     "totalDuration": 18
   },
-  "videos": {},
+  "videos": {
+    "panel-1": { "videoUrl": "/generated/panel-1-02d610e8.mp4", "status": "done" }
+  },
   "images": {
     "panel-2": {
       "startImage": "/branches/images/got-b1/panel-2-start.png",

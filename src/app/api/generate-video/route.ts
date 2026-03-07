@@ -1,145 +1,134 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGeminiClient } from "@/lib/gemini";
-import { ExtractedAssets } from "@/lib/types";
-import { buildVideoPrompt } from "@/lib/prompts";
+import { fal } from "@fal-ai/client";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-
 export const maxDuration = 300;
+
+fal.config({ credentials: process.env.FAL_KEY });
+
+async function uploadImageToFal(relativePath: string): Promise<string | null> {
+  const absPath = path.join(process.cwd(), "public", relativePath);
+  if (!fs.existsSync(absPath)) {
+    console.log(`[upload] File not found: ${absPath}`);
+    return null;
+  }
+
+  const data = fs.readFileSync(absPath);
+  const ext = path.extname(absPath).toLowerCase();
+  const mimeType = ext === ".png" ? "image/png" : "image/jpeg";
+  const blob = new Blob([data], { type: mimeType });
+  const url = await fal.storage.upload(blob);
+  console.log(`[upload] Uploaded ${relativePath} -> ${url}`);
+  return url;
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
     panelId,
-    visualPrompt: rawVisualPrompt,
-    panel,
-    assets,
+    visualPrompt,
     duration,
-    previousVideoPath,
     firstFramePath,
     lastFramePath,
-    referenceImagePaths,
   } = body as {
     panelId: string;
     visualPrompt: string;
-    panel?: { visualPrompt: string; sceneDescription: string; cameraAngle: string; cameraMovement: string; mood: string; characters: string[]; environment: string; dialogue: string; duration: number; id: string; order: number };
-    assets?: ExtractedAssets;
     duration: number;
-    previousVideoPath?: string;
     firstFramePath?: string;
     lastFramePath?: string;
-    referenceImagePaths?: string[];
   };
 
-  // Use enriched prompt if assets are provided, otherwise fall back to raw prompt
-  const visualPrompt = (panel && assets)
-    ? buildVideoPrompt(panel, assets)
-    : rawVisualPrompt;
-
   try {
-    const ai = getGeminiClient();
-
-    function loadImage(relativePath: string) {
-      const absPath = path.join(process.cwd(), "public", relativePath);
-      if (!fs.existsSync(absPath)) return null;
-      const data = fs.readFileSync(absPath);
-      const ext = path.extname(absPath).toLowerCase();
-      const mimeType = ext === ".png" ? "image/png" : "image/jpeg";
-      return { imageBytes: data.toString("base64"), mimeType };
+    const outputDir = path.join(process.cwd(), "public", "generated");
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    // Mode 1: Video extension (chain from previous panel using file URI)
-    if (previousVideoPath) {
-      console.log(`[${panelId}] Veo: extending previous video via file upload`);
-      // Upload the previous video as a file first, then reference it
-      const absVideoPath = path.join(process.cwd(), "public", previousVideoPath);
-      if (fs.existsSync(absVideoPath)) {
-        const videoData = fs.readFileSync(absVideoPath);
-        // Upload to Gemini files API
-        const uploadedFile = await ai.files.upload({
-          file: new Blob([videoData], { type: "video/mp4" }),
-          config: { mimeType: "video/mp4" },
-        });
-        console.log(`[${panelId}] Uploaded previous video: ${uploadedFile.name}`);
+    // Mode 1: Image-to-video with start frame via Grok Imagine Video
+    if (firstFramePath) {
+      const imageUrl = await uploadImageToFal(firstFramePath);
 
-        const operation = await ai.models.generateVideos({
-          model: "veo-3.1-generate-preview",
-          prompt: visualPrompt,
-          video: { uri: uploadedFile.uri, mimeType: "video/mp4" },
-          config: {
-            numberOfVideos: 1,
-            durationSeconds: Math.min(duration, 8),
+      if (imageUrl) {
+        console.log(`[${panelId}] Grok Imagine Video: image-to-video`);
+        const result = await fal.subscribe("xai/grok-imagine-video/image-to-video", {
+          input: {
+            prompt: visualPrompt,
+            image_url: imageUrl,
+            duration: Math.min(duration, 10),
+            aspect_ratio: "16:9",
+            resolution: "720p",
           },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-        return await pollAndDownload(ai, operation, panelId);
+          logs: true,
+          onQueueUpdate: (update) => {
+            console.log(`[${panelId}] Queue: ${update.status}`);
+            if (update.status === "IN_PROGRESS" && update.logs) {
+              update.logs.map((log) => log.message).forEach((msg) => console.log(`[${panelId}] ${msg}`));
+            }
+          },
+        });
+
+        console.log(`[${panelId}] Grok result:`, JSON.stringify(result.data, null, 2));
+        return await downloadAndSave(result.data, panelId, outputDir);
       }
+      console.log(`[${panelId}] Failed to upload frame, falling back to text-to-video`);
     }
 
-    // Mode 2: Image-to-video with first frame
-    const firstImg = firstFramePath ? loadImage(firstFramePath) : null;
-    const lastImg = lastFramePath ? loadImage(lastFramePath) : null;
-    if (firstImg && lastImg) {
-      console.log(`[${panelId}] Veo: image-to-video`);
-      const operation = await ai.models.generateVideos({
-        model: "veo-3.1-generate-preview",
+    // Mode 2: Text-to-video fallback via Grok Imagine Video
+    console.log(`[${panelId}] Grok Imagine Video: text-to-video`);
+    const result = await fal.subscribe("xai/grok-imagine-video/text-to-video", {
+      input: {
         prompt: visualPrompt,
-        image: { imageBytes: firstImg.imageBytes, mimeType: firstImg.mimeType },
-        config: {
-          numberOfVideos: 1,
-          durationSeconds: Math.min(duration, 8),
-          lastFrame: { imageBytes: lastImg?.imageBytes, mimeType: lastImg?.mimeType },
-        },
-      });
-      return await pollAndDownload(ai, operation, panelId);
-    }
-
-    // Mode 3: Text-to-video
-    console.log(`[${panelId}] Veo: text-to-video`);
-    const operation = await ai.models.generateVideos({
-      model: "veo-3.1-generate-preview",
-      prompt: visualPrompt,
-      config: {
-        aspectRatio: "16:9",
-        numberOfVideos: 1,
-        durationSeconds: Math.min(duration, 8),
+        duration: Math.min(duration, 10),
+        aspect_ratio: "16:9",
+        resolution: "720p",
+      },
+      logs: true,
+      onQueueUpdate: (update) => {
+        console.log(`[${panelId}] Queue: ${update.status}`);
+        if (update.status === "IN_PROGRESS" && update.logs) {
+          update.logs.map((log) => log.message).forEach((msg) => console.log(`[${panelId}] ${msg}`));
+        }
       },
     });
-    return await pollAndDownload(ai, operation, panelId);
+
+    console.log(`[${panelId}] Grok result:`, JSON.stringify(result.data, null, 2));
+    return await downloadAndSave(result.data, panelId, outputDir);
   } catch (error: unknown) {
-    console.error("Video generation error:", error);
-    const message = error instanceof Error ? error.message : String(error);
+    const errObj = error as any;
+    console.error(`[${panelId}] Video generation error:`, JSON.stringify({
+      message: errObj?.message,
+      status: errObj?.status,
+      body: errObj?.body,
+      detail: errObj?.detail,
+      name: errObj?.name,
+      raw: String(error),
+    }, null, 2));
+    const message = errObj?.body?.detail || errObj?.message || String(error);
     return NextResponse.json({ error: message, panelId }, { status: 500 });
   }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function pollAndDownload(ai: any, operation: any, panelId: string) {
-  while (!operation.done) {
-    console.log(`[${panelId}] Waiting for video generation...`);
-    await new Promise((r) => setTimeout(r, 10000));
-    operation = await ai.operations.getVideosOperation({ operation });
+async function downloadAndSave(data: any, panelId: string, outputDir: string) {
+  const videoUrl = data?.video?.url;
+  if (!videoUrl) {
+    console.error(`[${panelId}] No video URL in response. Data:`, JSON.stringify(data, null, 2));
+    return NextResponse.json({ error: "No video URL in response", panelId }, { status: 500 });
   }
 
-  const generatedVideos = operation.response?.generatedVideos || [];
-  if (generatedVideos.length === 0) {
-    return NextResponse.json({ error: "No video generated", panelId }, { status: 500 });
+  const response = await fetch(videoUrl);
+  if (!response.ok) {
+    return NextResponse.json({ error: `Failed to download video: ${response.status}`, panelId }, { status: 500 });
   }
 
-  const video = generatedVideos[0];
-  const outputDir = path.join(process.cwd(), "public", "generated");
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-  }
-
+  const buffer = Buffer.from(await response.arrayBuffer());
   const filename = `${panelId}-${crypto.randomBytes(4).toString("hex")}.mp4`;
   const downloadPath = path.join(outputDir, filename);
+  fs.writeFileSync(downloadPath, buffer);
 
-  await ai.files.download({ file: video.video!, downloadPath });
-
-  const fileBuffer = fs.readFileSync(downloadPath);
-  const base64Video = fileBuffer.toString("base64");
+  const base64Video = buffer.toString("base64");
+  console.log(`[${panelId}] Saved video: ${filename} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
 
   return NextResponse.json({
     panelId,
