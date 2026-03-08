@@ -10,6 +10,9 @@ import {
   Storyboard,
   StoryboardPanel,
 } from "@/lib/types";
+import ForkPointPicker from "@/components/ForkPointPicker";
+import SegmentPicker from "@/components/SegmentPicker";
+import CompositePlayer from "@/components/CompositePlayer";
 
 export default function CreatePage() {
   const params = useParams();
@@ -21,10 +24,16 @@ export default function CreatePage() {
 
   // ── Stage control ──
   const [stage, setStage] = useState<
-    "select-type" | "extracting" | "suggestions" | "chat" | "storyboard" | "generating" | "done"
+    "select-type" | "pick-insert" | "pick-replace" | "confirm-replace" | "extracting" | "suggestions" | "chat" | "storyboard" | "generating" | "done"
   >("select-type");
   const [branchType, setBranchType] = useState("");
   const [error, setError] = useState("");
+  const [insertPoint, setInsertPoint] = useState<number | null>(null);
+  const [replaceStart, setReplaceStart] = useState<number | null>(null);
+  const [replaceEnd, setReplaceEnd] = useState<number | null>(null);
+  const [replacePrompt, setReplacePrompt] = useState("");
+  const [findingSegment, setFindingSegment] = useState(false);
+  const [foundSegmentInfo, setFoundSegmentInfo] = useState<{ description: string; confidence: string } | null>(null);
 
   // ── Stage 1: Asset extraction ──
   const [assets, setAssets] = useState<ExtractedAssets | null>(null);
@@ -48,9 +57,15 @@ export default function CreatePage() {
   const [storyboardLoading, setStoryboardLoading] = useState(false);
 
   // ── Stage 3.5: Generation mode + frame planning ──
-  const [generationMode, setGenerationMode] = useState<"interpolate" | "generate">("interpolate");
+  const [generationMode, setGenerationMode] = useState<"interpolate" | "generate" | "smart">("smart");
   const [framePlan, setFramePlan] = useState<Record<string, { startFrame: string; endFrame: string; startTimestamp: number; endTimestamp: number }> | null>(null);
   const [planningFrames, setPlanningFrames] = useState(false);
+
+  // Cache frame results per mode so switching tabs preserves work
+  const [frameCache, setFrameCache] = useState<Record<string, {
+    framePlan?: typeof framePlan;
+    smartImages?: Record<string, { startImage?: string; endImage?: string }>;
+  }>>({});
 
   // ── Stage 4: Video generation ──
   const [generatedVideos, setGeneratedVideos] = useState<
@@ -74,8 +89,105 @@ export default function CreatePage() {
 
   async function handleSelectType(type: string) {
     setBranchType(type);
-    setStage("extracting");
     setError("");
+
+    // For insert, pick the insert point first
+    if (type === "insert" && episode?.videoUrl) {
+      setStage("pick-insert");
+      return;
+    }
+
+    // For replace, pick the segment first
+    if (type === "replace" && episode?.videoUrl) {
+      setStage("pick-replace");
+      return;
+    }
+
+    startExtraction(type);
+  }
+
+  function handleInsertPointSelected(time: number) {
+    setInsertPoint(time);
+    startExtraction(branchType);
+  }
+
+  function handleReplaceSegmentSelected(start: number, end: number) {
+    setReplaceStart(start);
+    setReplaceEnd(end);
+    startExtraction(branchType);
+  }
+
+  async function handleSmartReplace() {
+    if (!replacePrompt.trim() || !episode?.videoUrl) return;
+    setFindingSegment(true);
+    setError("");
+
+    try {
+      // First extract assets (needed for context)
+      const extractRes = await fetch("/api/extract-assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoPath: episode.videoUrl,
+          showTitle: show?.title,
+          episodeTitle: episode.title,
+        }),
+      });
+
+      if (!extractRes.ok) throw new Error("Extraction failed");
+      const extractData = await extractRes.json();
+      setAssets(extractData.assets);
+
+      // Ask Gemini to find the segment
+      const findRes = await fetch("/api/find-segment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoPath: episode.videoUrl,
+          description: replacePrompt.trim(),
+          showTitle: show?.title,
+          episodeTitle: episode.title,
+        }),
+      });
+
+      if (!findRes.ok) throw new Error("Could not find matching segment");
+      const findData = await findRes.json();
+
+      setReplaceStart(findData.startTime);
+      setReplaceEnd(findData.endTime);
+      setFoundSegmentInfo({ description: findData.description, confidence: findData.confidence });
+
+      // Show the found segment for confirmation before proceeding
+      setStage("confirm-replace");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setError(msg);
+    } finally {
+      setFindingSegment(false);
+    }
+  }
+
+  async function handleConfirmFoundSegment() {
+    // Assets already extracted during smart replace — go to suggestions
+    setStage("suggestions");
+    setSuggestionsLoading(true);
+    try {
+      const sugRes = await fetch("/api/suggest-alternates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assets, branchType: "replace" }),
+      });
+      if (sugRes.ok) {
+        const sugData = await sugRes.json();
+        setSuggestions(sugData.suggestions || []);
+      }
+    } catch { /* ok */ } finally {
+      setSuggestionsLoading(false);
+    }
+  }
+
+  async function startExtraction(type: string) {
+    setStage("extracting");
 
     if (!episode?.videoUrl) {
       setError("No video available for this episode.");
@@ -131,12 +243,24 @@ export default function CreatePage() {
 
   async function handlePickSuggestion(suggestion: { title: string; description: string }) {
     setStage("chat");
-    const message = `I want to create: "${suggestion.title}" — ${suggestion.description}`;
+    let timeCtx = "";
+    if (branchType === "insert" && insertPoint != null) {
+      timeCtx = ` The scene should be inserted at the ${fmtTime(insertPoint)} mark in the original video.`;
+    } else if (branchType === "replace" && replaceStart != null && replaceEnd != null) {
+      timeCtx = ` This replaces the segment from ${fmtTime(replaceStart)} to ${fmtTime(replaceEnd)} in the original video.`;
+    }
+    const message = `I want to create: "${suggestion.title}" — ${suggestion.description}${timeCtx}`;
     await sendChatMessage(message, assets!, branchType);
   }
 
   function handleCustomIdea() {
     setStage("chat");
+  }
+
+  function fmtTime(s: number) {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
   }
 
   async function sendChatMessage(
@@ -256,8 +380,40 @@ export default function CreatePage() {
     if (!storyboard) return;
     setStage("generating");
 
-    // If interpolating and no frame plan yet, plan first
-    if (generationMode === "interpolate" && !framePlan && episode?.videoUrl) {
+    // Check cache first
+    let smartImages: Record<string, { startImage?: string; endImage?: string }> | null = frameCache.smart?.smartImages || null;
+    let currentFramePlan = frameCache.interpolate?.framePlan || framePlan;
+
+    // Smart mode: let Gemini decide per-frame whether to extract or generate
+    if (generationMode === "smart" && !smartImages && episode?.videoUrl && assets) {
+      setPlanningFrames(true);
+      try {
+        const brId = `new-${Date.now()}`;
+        const res = await fetch("/api/smart-frames", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            panels: storyboard.panels,
+            assets,
+            videoPath: episode.videoUrl,
+            branchId: brId,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          smartImages = data.images;
+          // Cache the result
+          setFrameCache((prev) => ({ ...prev, smart: { smartImages: data.images } }));
+        }
+      } catch {
+        // Continue without smart frames
+      } finally {
+        setPlanningFrames(false);
+      }
+    }
+
+    // Interpolate mode: extract all frames from source video
+    if (generationMode === "interpolate" && !currentFramePlan && episode?.videoUrl) {
       setPlanningFrames(true);
       try {
         const branchId = `new-${Date.now()}`;
@@ -272,7 +428,10 @@ export default function CreatePage() {
         });
         if (res.ok) {
           const data = await res.json();
+          currentFramePlan = data.framePlan;
           setFramePlan(data.framePlan);
+          // Cache the result
+          setFrameCache((prev) => ({ ...prev, interpolate: { framePlan: data.framePlan } }));
         }
       } catch {
         // Continue without frames
@@ -293,18 +452,32 @@ export default function CreatePage() {
     // Fire all video generations in parallel
     const promises = storyboard.panels.map(async (panel: StoryboardPanel) => {
       try {
-        const panelFrame = framePlan?.[panel.id];
+        const panelFrame = currentFramePlan?.[panel.id];
+        const smartFrame = smartImages?.[panel.id];
+
+        // Determine frame paths based on mode
+        let firstFramePath: string | undefined;
+        let lastFramePath: string | undefined;
+
+        if (generationMode === "smart" && smartFrame) {
+          firstFramePath = smartFrame.startImage;
+          lastFramePath = smartFrame.endImage;
+        } else if (generationMode === "interpolate" && panelFrame) {
+          firstFramePath = panelFrame.startFrame;
+          lastFramePath = panelFrame.endFrame;
+        }
+
         const res = await fetch("/api/generate-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             panelId: panel.id,
-            visualPrompt: panel.visualPrompt || panel.sceneDescription,
+            visualPrompt: panel.transitionPrompt || panel.visualPrompt || panel.sceneDescription,
             panel,
             assets,
             duration: panel.duration,
-            firstFramePath: generationMode === "interpolate" ? panelFrame?.startFrame : undefined,
-            lastFramePath: generationMode === "interpolate" ? panelFrame?.endFrame : undefined,
+            firstFramePath,
+            lastFramePath,
             referenceImagePaths,
           }),
         });
@@ -341,19 +514,17 @@ export default function CreatePage() {
   // ── Render ──
 
   const stageIndex =
-    stage === "select-type"
+    stage === "select-type" || stage === "pick-insert" || stage === "pick-replace" || stage === "confirm-replace"
       ? 0
       : stage === "extracting"
         ? 1
-        : stage === "suggestions"
+        : stage === "suggestions" || stage === "chat"
           ? 2
-          : stage === "chat"
-            ? 2
-            : stage === "storyboard"
-              ? 3
-              : stage === "generating" || stage === "done"
-                ? 4
-                : 0;
+          : stage === "storyboard"
+            ? 3
+            : stage === "generating" || stage === "done"
+              ? 4
+              : 0;
 
   const stageLabels = [
     "Branch Type",
@@ -449,35 +620,213 @@ export default function CreatePage() {
               Choose how to branch from the original.
             </p>
 
-            <div className="grid grid-cols-3 gap-3 mb-8">
+            <div className="grid grid-cols-2 gap-3 mb-8">
               {[
                 {
                   id: "continue",
                   title: "Continue Differently",
                   desc: "New direction from a specific scene",
+                  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M7 3v18M3 7l4-4 4 4M17 3v18M13 17l4 4 4-4" /></svg>,
                 },
                 {
                   id: "insert",
                   title: "Insert Scene",
                   desc: "Add a scene between existing ones",
+                  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
+                },
+                {
+                  id: "replace",
+                  title: "Replace Segment",
+                  desc: "Swap a section with a new version",
+                  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" /></svg>,
                 },
                 {
                   id: "ending",
                   title: "Alternate Ending",
                   desc: "Reimagine how it concludes",
+                  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
                 },
               ].map((type) => (
                 <button
                   key={type.id}
                   onClick={() => handleSelectType(type.id)}
-                  className="text-left p-5 bg-[#181818] border border-white/5 hover:border-white/20 hover:bg-[#1f1f1f] transition-all"
+                  className="text-left p-5 bg-[#181818] border border-white/5 hover:border-white/20 hover:bg-[#1f1f1f] transition-all group"
                 >
+                  <div className="w-8 h-8 flex items-center justify-center bg-white/[0.04] text-white/30 group-hover:text-white/60 mb-3 transition-colors">
+                    {type.icon}
+                  </div>
                   <h3 className="text-[13px] font-semibold mb-1">
                     {type.title}
                   </h3>
                   <p className="text-[11px] text-white/25">{type.desc}</p>
                 </button>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Stage: Pick Insert Point ── */}
+        {stage === "pick-insert" && episode?.videoUrl && (
+          <div className="fade-up">
+            <h2 className="text-[15px] font-bold mb-1">
+              Where should the scene be inserted?
+            </h2>
+            <p className="text-[11px] text-white/30 mb-6">
+              Play or scrub the video, then click the timeline to set the insert point.
+            </p>
+            <ForkPointPicker
+              src={episode.videoUrl}
+              poster={episode.thumbnail}
+              onSelect={handleInsertPointSelected}
+              initialTime={insertPoint ?? undefined}
+            />
+          </div>
+        )}
+
+        {/* ── Stage: Pick Replace Segment ── */}
+        {stage === "pick-replace" && episode?.videoUrl && (
+          <div className="fade-up">
+            <h2 className="text-[15px] font-bold mb-1">
+              Which segment should be replaced?
+            </h2>
+            <p className="text-[11px] text-white/30 mb-6">
+              Pick the segment visually, or describe what you want to change and we&apos;ll find it.
+            </p>
+
+            {/* Smart find option */}
+            <div className="mb-6 p-5 bg-[#141414] border border-white/[0.06]">
+              <div className="flex items-center gap-2 mb-3">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-white/40">
+                  <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <span className="text-[11px] font-semibold text-white/60">Describe what to change</span>
+              </div>
+              <div className="flex gap-3">
+                <input
+                  type="text"
+                  value={replacePrompt}
+                  onChange={(e) => setReplacePrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && replacePrompt.trim() && !findingSegment) handleSmartReplace();
+                  }}
+                  placeholder='e.g. "the part where they argue" or "the chase scene"'
+                  className="flex-1 bg-[#0e0e0e] border border-white/10 px-4 py-2.5 text-[12px] text-white placeholder:text-white/15 focus:outline-none focus:border-white/25 transition-colors"
+                />
+                <button
+                  onClick={handleSmartReplace}
+                  disabled={!replacePrompt.trim() || findingSegment}
+                  className="px-5 py-2.5 bg-white text-black text-[10px] font-semibold tracking-[0.15em] uppercase hover:bg-white/90 transition-colors disabled:opacity-30"
+                >
+                  {findingSegment ? "Finding..." : "Find & Replace"}
+                </button>
+              </div>
+              {findingSegment && (
+                <div className="flex items-center gap-2 mt-3">
+                  <div className="w-3 h-3 rounded-full border border-white/20 border-t-white/80 spin" />
+                  <span className="text-[10px] text-white/30">Analyzing video to find matching segment...</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="flex-1 h-px bg-white/[0.06]" />
+              <span className="text-[9px] text-white/20 tracking-[0.2em] uppercase">or select manually</span>
+              <div className="flex-1 h-px bg-white/[0.06]" />
+            </div>
+
+            <SegmentPicker
+              src={episode.videoUrl}
+              poster={episode.thumbnail}
+              onSelect={handleReplaceSegmentSelected}
+            />
+          </div>
+        )}
+
+        {/* ── Stage: Confirm Found Segment ── */}
+        {stage === "confirm-replace" && episode?.videoUrl && replaceStart != null && replaceEnd != null && (
+          <div className="fade-up">
+            <h2 className="text-[15px] font-bold mb-1">
+              Segment Found
+            </h2>
+            <p className="text-[11px] text-white/30 mb-6">
+              Review the detected segment below. Confirm to proceed or go back to adjust.
+            </p>
+
+            {/* Found segment info */}
+            <div className="mb-5 p-5 bg-[#141414] border border-white/[0.06]">
+              <div className="flex items-start gap-4">
+                <div className="flex-1">
+                  {foundSegmentInfo && (
+                    <p className="text-[12px] text-white/70 mb-3">
+                      {foundSegmentInfo.description}
+                    </p>
+                  )}
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-white/30 tracking-[0.1em] uppercase">Start</span>
+                      <span className="text-[13px] font-mono font-semibold text-white">
+                        {Math.floor(replaceStart / 60)}:{Math.floor(replaceStart % 60).toString().padStart(2, "0")}
+                      </span>
+                    </div>
+                    <svg width="16" height="8" viewBox="0 0 16 8" className="text-white/20">
+                      <path d="M0 4h14M10 0l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                    </svg>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-white/30 tracking-[0.1em] uppercase">End</span>
+                      <span className="text-[13px] font-mono font-semibold text-white">
+                        {Math.floor(replaceEnd / 60)}:{Math.floor(replaceEnd % 60).toString().padStart(2, "0")}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-white/30">
+                      ({(replaceEnd - replaceStart).toFixed(1)}s)
+                    </span>
+                    {foundSegmentInfo && (
+                      <span className={`ml-auto text-[9px] tracking-[0.1em] uppercase px-2 py-0.5 border ${
+                        foundSegmentInfo.confidence === "high"
+                          ? "text-green-400/80 border-green-400/20 bg-green-400/5"
+                          : foundSegmentInfo.confidence === "medium"
+                            ? "text-yellow-400/80 border-yellow-400/20 bg-yellow-400/5"
+                            : "text-red-400/80 border-red-400/20 bg-red-400/5"
+                      }`}>
+                        {foundSegmentInfo.confidence} confidence
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Video preview with segment */}
+            <SegmentPicker
+              src={episode.videoUrl}
+              poster={episode.thumbnail}
+              onSelect={(start, end) => {
+                setReplaceStart(start);
+                setReplaceEnd(end);
+              }}
+              initialStart={replaceStart}
+              initialEnd={replaceEnd}
+            />
+
+            {/* Action buttons */}
+            <div className="flex items-center justify-between mt-5">
+              <button
+                onClick={() => {
+                  setReplaceStart(null);
+                  setReplaceEnd(null);
+                  setFoundSegmentInfo(null);
+                  setStage("pick-replace");
+                }}
+                className="px-4 py-2 text-[10px] text-white/40 hover:text-white/70 tracking-[0.1em] uppercase transition-colors"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleConfirmFoundSegment}
+                className="px-6 py-2.5 bg-white text-black text-[10px] font-semibold tracking-[0.15em] uppercase hover:bg-white/90 transition-colors"
+              >
+                Confirm &amp; Continue
+              </button>
             </div>
           </div>
         )}
@@ -830,6 +1179,19 @@ export default function CreatePage() {
                   {/* Generation mode selector */}
                   <div className="flex gap-3 mb-4">
                     <button
+                      onClick={() => { setGenerationMode("smart"); setFramePlan(null); }}
+                      className={`flex-1 p-3 text-left transition-all ${
+                        generationMode === "smart"
+                          ? "bg-emerald-500/10 border border-emerald-500/30"
+                          : "bg-[#181818] border border-white/5 hover:border-white/15"
+                      }`}
+                    >
+                      <div className="text-[11px] font-semibold mb-0.5">Smart <span className="text-[8px] font-normal text-emerald-400/60 ml-1">Recommended</span></div>
+                      <p className="text-[9px] text-white/30">
+                        Gemini analyzes each frame — extracts from source when possible, generates new when the scene diverges.
+                      </p>
+                    </button>
+                    <button
                       onClick={() => { setGenerationMode("interpolate"); setFramePlan(null); }}
                       className={`flex-1 p-3 text-left transition-all ${
                         generationMode === "interpolate"
@@ -837,9 +1199,9 @@ export default function CreatePage() {
                           : "bg-[#181818] border border-white/5 hover:border-white/15"
                       }`}
                     >
-                      <div className="text-[11px] font-semibold mb-0.5">Interpolate from Source</div>
+                      <div className="text-[11px] font-semibold mb-0.5">Extract from Source</div>
                       <p className="text-[9px] text-white/30">
-                        Gemini picks start/end frames from the original video. Veo interpolates between them.
+                        All frames pulled from the original video at timestamps Gemini selects.
                       </p>
                     </button>
                     <button
@@ -850,15 +1212,15 @@ export default function CreatePage() {
                           : "bg-[#181818] border border-white/5 hover:border-white/15"
                       }`}
                     >
-                      <div className="text-[11px] font-semibold mb-0.5">Generate New</div>
+                      <div className="text-[11px] font-semibold mb-0.5">Generate All New</div>
                       <p className="text-[9px] text-white/30">
-                        Create entirely new footage using extracted assets (characters, environments) as reference.
+                        Create entirely new frames with AI image generation using extracted assets as reference.
                       </p>
                     </button>
                   </div>
 
                   {/* Frame plan preview button */}
-                  {generationMode === "interpolate" && !framePlan && episode?.videoUrl && (
+                  {(generationMode === "interpolate" || generationMode === "smart") && !framePlan && episode?.videoUrl && (
                     <button
                       onClick={handlePlanFrames}
                       disabled={planningFrames}
@@ -1093,6 +1455,54 @@ export default function CreatePage() {
               })}
             </div>
 
+            {/* Composite player for insert/replace mode */}
+            {allDone && episode?.videoUrl && (branchType === "insert" || branchType === "replace") && (() => {
+              const generatedClipUrls = storyboard.panels
+                .map((p) => generatedVideos[p.id])
+                .filter((v) => v?.status === "done" && (v.videoUrl || v.videoData))
+                .map((v, i) => ({
+                  type: "generated" as const,
+                  src: v!.videoUrl || `data:video/mp4;base64,${v!.videoData}`,
+                  label: `Panel ${i + 1}`,
+                }));
+
+              if (generatedClipUrls.length === 0) return null;
+
+              let segments;
+              let description;
+
+              if (branchType === "insert" && insertPoint != null) {
+                segments = [
+                  { type: "original" as const, src: episode.videoUrl!, startTime: 0, endTime: insertPoint, label: "Before insert" },
+                  ...generatedClipUrls,
+                  { type: "original" as const, src: episode.videoUrl!, startTime: insertPoint, label: "After insert" },
+                ];
+                description = <>Original &rarr; Insert @ {fmtTime(insertPoint)} &rarr; Original continues</>;
+              } else if (branchType === "replace" && replaceStart != null && replaceEnd != null) {
+                segments = [
+                  { type: "original" as const, src: episode.videoUrl!, startTime: 0, endTime: replaceStart, label: "Before" },
+                  ...generatedClipUrls,
+                  { type: "original" as const, src: episode.videoUrl!, startTime: replaceEnd, label: "After" },
+                ];
+                description = <>Original &rarr; Replaced {fmtTime(replaceStart)}–{fmtTime(replaceEnd)} &rarr; Original continues</>;
+              } else {
+                return null;
+              }
+
+              return (
+                <div className="mt-6 mb-6">
+                  <h3 className="text-[11px] font-semibold tracking-[0.2em] uppercase text-white/40 mb-3">
+                    Composite Preview
+                  </h3>
+                  <p className="text-[10px] text-white/25 mb-3">{description}</p>
+                  <CompositePlayer
+                    segments={segments}
+                    poster={episode.thumbnail}
+                  />
+                </div>
+              );
+            })()}
+
             {allDone && (
               <div className="flex justify-center gap-3 mt-8">
                 <Link
@@ -1105,6 +1515,10 @@ export default function CreatePage() {
                   onClick={() => {
                     setStage("select-type");
                     setBranchType("");
+                    setInsertPoint(null);
+                    setReplaceStart(null);
+                    setReplaceEnd(null);
+                    setReplacePrompt("");
                     setAssets(null);
                     setSuggestions([]);
                     setMessages([]);

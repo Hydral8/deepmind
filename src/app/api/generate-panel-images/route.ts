@@ -12,7 +12,7 @@ fal.config({ credentials: process.env.FAL_KEY });
 
 export async function POST(req: NextRequest) {
   try {
-    const { panel, assets, videoPath, branchId, useOriginalFrames, numVariants = 1 } = (await req.json()) as {
+    const { panel, assets, videoPath, branchId, useOriginalFrames, numVariants = 2 } = (await req.json()) as {
       panel: StoryboardPanel;
       assets: ExtractedAssets;
       videoPath?: string;
@@ -76,8 +76,8 @@ export async function POST(req: NextRequest) {
 
     const variantCount = Math.min(Math.max(numVariants, 1), 4);
 
-    // Generate start frame variants with Nano Banana 2
-    const startPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "start");
+    // Use panel's own prompts if available, fall back to buildPanelImagePrompt
+    const startPrompt = panel.startFramePrompt || buildPanelImagePrompt(panel, assets, referenceDescriptions, "start");
     console.log(`[${panel.id}] Generating ${variantCount} start frame variant(s) with Nano Banana 2...`);
 
     const startResult = await fal.subscribe("fal-ai/nano-banana-2", {
@@ -104,8 +104,7 @@ export async function POST(req: NextRequest) {
       console.log(`[${panel.id}] Start frame saved: ${filename}`);
     }
 
-    // Generate end frame variants with Nano Banana 2
-    const endPrompt = buildPanelImagePrompt(panel, assets, referenceDescriptions, "end");
+    const endPrompt = panel.endFramePrompt || buildPanelImagePrompt(panel, assets, referenceDescriptions, "end");
     console.log(`[${panel.id}] Generating ${variantCount} end frame variant(s) with Nano Banana 2...`);
 
     const endResult = await fal.subscribe("fal-ai/nano-banana-2", {

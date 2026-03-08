@@ -61,17 +61,20 @@ export interface StoryboardPanel {
   id: string;
   order: number;
   sceneDescription: string;
-  cameraAngle: string;
-  cameraMovement: string;
   characters: string[];
   dialogue: string;
   environment: string;
   mood: string;
-  duration: number; // seconds
-  visualPrompt: string; // the full prompt for Veo
-  generationMode?: "interpolate" | "generate"; // interpolate from source video or generate fresh
-  startFrame?: string; // path to start frame image (from source video or AI-generated)
-  endFrame?: string;   // path to end frame image
+  duration: number;
+  startFramePrompt: string;  // still image: what the first frame looks like
+  endFramePrompt: string;    // still image: what the last frame looks like
+  transitionPrompt: string;  // what changes between start and end (drives video gen)
+  // Legacy / optional
+  visualPrompt?: string;
+  cameraAngle?: string;
+  cameraMovement?: string;
+  startFrame?: string;
+  endFrame?: string;
 }
 
 export interface Storyboard {

@@ -235,18 +235,28 @@ WORLD RULES:
 ${assets.seriesContext.worldRules}
 Tone: ${assets.seriesContext.tone}
 
-Generate a storyboard as JSON with 3-6 panels.
+Generate a storyboard as JSON with exactly 2 panels.
 
-CRITICAL RULES FOR visualPrompt:
+PANEL DURATION RULES:
+- Each panel should be 10-15 seconds long. This is the sweet spot for video generation models.
+- Combine related beats into longer, semantically coherent chunks. Think in terms of "scenes" not "shots".
+- Panel 1 = the setup and inciting moment. Panel 2 = the payoff and resolution.
+- Split at the single most important narrative turning point.
+
+FOR EACH PANEL, you must provide three distinct prompts:
+
+1. **startFramePrompt** — A still image description of what the viewer sees at the FIRST FRAME. This is a frozen moment: character positions, expressions, environment state, camera framing, lighting. Self-contained — someone reading only this should picture the exact frame.
+
+2. **endFramePrompt** — A still image description of what the viewer sees at the LAST FRAME. Must be visually DIFFERENT from the start frame — show what changed. Different character positions, expressions, camera framing, or environment state.
+
+3. **transitionPrompt** — Describes what HAPPENS between start and end. This drives the video generation model to animate the change. Focus on: motion, action, emotional shift, camera movement. This is NOT a still image — it describes movement and transformation.
+
+RULES FOR ALL PROMPTS:
+- NEVER use character names. Describe by appearance: "a tall woman with silver-blonde braided hair, pale skin, wearing dark leather armor" — not "Daenerys".
+- Each prompt must be self-contained. Include: subject position, background, foreground, lighting, atmosphere, color palette.
+- Start and end frames MUST be visually distinct. If they look the same, the video will have no motion.
+
 ${VISUAL_REALISM_DIRECTIVE}
-
-${ANTI_AI_ARTIFACTS}
-
-- NEVER use character names in visualPrompt. Describe them by exact physical appearance: "a tall woman with silver-blonde braided hair, pale skin, wearing a black leather coat with dragon-scale embossing" — not "Daenerys".
-- Each visualPrompt must be a self-contained scene description. A person reading ONLY the visualPrompt (with no other context) should be able to picture the exact frame.
-- Include: subject position in frame, background detail, foreground elements, lighting direction and quality, atmospheric effects (fog, dust, smoke), color palette, lens characteristics.
-- Describe motion: what is moving, in what direction, at what speed.
-- Describe sound design cues in the dialogue field if relevant (ambient sounds that affect the mood).
 
 {
   "title": "title for this alternate branch",
@@ -254,19 +264,19 @@ ${ANTI_AI_ARTIFACTS}
     {
       "id": "panel-1",
       "order": 1,
-      "sceneDescription": "narrative beat — what happens emotionally and physically",
-      "cameraAngle": "specific angle matching the source material's visual language",
-      "cameraMovement": "specific movement (e.g. 'slow dolly in from medium to close-up over 3 seconds')",
-      "characters": ["character names present in this panel"],
-      "dialogue": "exact dialogue and/or key sound design",
-      "environment": "specific setting with lighting and atmosphere",
-      "mood": "emotional tone of this specific beat",
-      "duration": 5,
-      "visualPrompt": "FULL self-contained visual description. [See rules above]"
+      "sceneDescription": "narrative summary of what happens in this beat",
+      "characters": ["character names present"],
+      "dialogue": "dialogue if any",
+      "environment": "setting",
+      "mood": "emotional tone",
+      "duration": 12,
+      "startFramePrompt": "Still image: what the first frame looks like. Specific composition, character positions, expressions, lighting.",
+      "endFramePrompt": "Still image: what the last frame looks like. Must differ from start — show the change.",
+      "transitionPrompt": "What happens between start and end. Motion, action, camera movement, emotional shift."
     }
   ],
-  "musicPrompt": "Describe the score: instrumentation, tempo, key, emotional arc across the full sequence. Reference the source material's musical language. Avoid generic descriptions like 'epic orchestral' — be specific: 'low cello drone in D minor, sparse piano in upper register, building to dissonant brass stabs'.",
-  "totalDuration": 20
+  "musicPrompt": "Score description: instrumentation, tempo, key, emotional arc.",
+  "totalDuration": 24
 }
 
 Return ONLY valid JSON, no markdown fences.`;
@@ -300,6 +310,46 @@ Respond with ONLY valid JSON array:
 ]`;
 }
 
+// ── Smart Frame Strategy ──
+
+export function buildSmartFrameStrategyPrompt(panelDescriptions: string): string {
+  return `You are a VFX supervisor deciding the best strategy for generating start/end keyframes for each panel of an alternate scene. You have two options per frame:
+
+1. **"extract"** — Pull a frame directly from the original source video. Use this when:
+   - The panel's visual state closely matches something already in the source footage
+   - Same characters, same environment, similar lighting and mood
+   - The panel is a slight variation of what already exists (e.g. different dialogue but same blocking)
+   - The source video has a clean, well-composed frame that matches
+
+2. **"generate"** — Create a new frame with AI image generation. Use this when:
+   - The panel diverges significantly from the source (new action, new composition, new emotion)
+   - Characters are in positions/states not seen in the original footage
+   - The environment is altered (e.g. destroyed, transformed, different time of day)
+   - New characters or objects appear that weren't in the source
+   - The camera angle is dramatically different from anything in the source
+
+For each panel, decide independently for BOTH the start frame and the end frame. A panel might extract its start frame from source but generate its end frame (or vice versa).
+
+When choosing "extract", also provide the best timestamp (total seconds, minimum 3) from the source video.
+
+PANELS:
+${panelDescriptions}
+
+Respond with ONLY valid JSON array:
+[
+  {
+    "panelId": "panel-1",
+    "startFrame": { "strategy": "extract", "timestamp": 10, "reason": "matches the opening composition" },
+    "endFrame": { "strategy": "generate", "reason": "character emotion not present in source" }
+  },
+  {
+    "panelId": "panel-2",
+    "startFrame": { "strategy": "extract", "timestamp": 25, "reason": "same two-shot exists at this point" },
+    "endFrame": { "strategy": "extract", "timestamp": 30, "reason": "embrace is visually close to source" }
+  }
+]`;
+}
+
 // ── Panel Image Generation ──
 
 export function buildPanelImagePrompt(
@@ -308,41 +358,15 @@ export function buildPanelImagePrompt(
   referenceDescriptions: string[],
   position: "start" | "end"
 ): string {
-  const positionContext = position === "start"
-    ? "This is the OPENING frame — the first thing the viewer sees in this beat."
-    : `This is the CLOSING frame — the final moment of this beat.${panel.dialogue ? ` The scene lands on: "${panel.dialogue}"` : ""} Show the resolution/reaction.`;
+  // Use the panel's own prompt — Gemini already wrote it
+  const scenePrompt = position === "start"
+    ? (panel.startFramePrompt || panel.sceneDescription)
+    : (panel.endFramePrompt || panel.sceneDescription);
 
-  const assetContext = referenceDescriptions.length > 0
-    ? `\nREFERENCE ASSETS (attached images — you MUST match these EXACTLY):
-${referenceDescriptions.join("\n")}
+  return `${scenePrompt}
 
-These reference images are your ground truth. The output must look like it was shot on the same set, same day, same camera, same lighting setup. Match skin tones, fabric textures, environment materials, and color grading precisely.`
-    : "";
-
-  return `Generate a single photorealistic cinematic film frame. NOT a painting, NOT concept art, NOT an illustration. A frame that could be pulled from a real camera's sensor output.
-
-${positionContext}
-
-SCENE: ${panel.sceneDescription}
-${panel.visualPrompt}
-${assetContext}
-
-CAMERA: ${panel.cameraAngle} | ${panel.cameraMovement}
-MOOD: ${panel.mood}
-ENVIRONMENT: ${panel.environment}
-
-STYLE MATCH:
-- Color grading: ${assets.cameraStyle.colorGrading}
-- Visual texture: ${assets.cameraStyle.visualTone}
-- Aspect ratio: ${assets.cameraStyle.aspectRatio}
-
-${VISUAL_REALISM_DIRECTIVE}
-
-${ANTI_AI_ARTIFACTS}
-
-CRITICAL: Each character may appear AT MOST ONCE in the frame. NEVER show the same person twice. No mirrors, reflections, clones, or duplicate figures of any character.
-
-Output: 16:9 aspect ratio. Photorealistic. No watermarks. No text overlays. No borders.`;
+Hyperrealistic, photorealistic cinematic film frame. ${assets.cameraStyle.colorGrading}. ${assets.cameraStyle.visualTone}.
+Each character appears at most once — no duplicates or reflections. 16:9. No watermarks or text.`;
 }
 
 // ── Video Generation (Veo) ──

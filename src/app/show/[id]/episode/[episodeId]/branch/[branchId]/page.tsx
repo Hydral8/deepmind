@@ -8,10 +8,17 @@ import VideoPlayer from "@/components/VideoPlayer";
 import GenerationProgress from "@/components/GenerationProgress";
 import { Storyboard } from "@/lib/types";
 
+interface PanelImages {
+  startImage?: string;
+  endImage?: string;
+  startVariants?: string[];
+  endVariants?: string[];
+}
+
 interface GeneratedBranch {
   storyboard: Storyboard;
   videos: Record<string, { videoUrl: string; status: string }>;
-  images?: Record<string, { startImage?: string; endImage?: string }>;
+  images?: Record<string, PanelImages>;
   frames?: Record<string, { startFrame?: string; endFrame?: string; startTimestamp?: number; endTimestamp?: number }>;
   fullVideo?: string;
 }
@@ -30,7 +37,7 @@ export default function BranchPage() {
   const [activePanel, setActivePanel] = useState<string | null>(null);
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [generatingAll, setGeneratingAll] = useState(false);
-  const [videoModel, setVideoModel] = useState<"grok" | "kling">("grok");
+  const [videoModel, setVideoModel] = useState<"grok" | "kling">("kling");
 
   useEffect(() => {
     fetch(`/branches/${branchId}.json`)
@@ -52,14 +59,37 @@ export default function BranchPage() {
       .catch(() => {});
   }, [branchId]);
 
-  // Persist video state to branch JSON
-  const persistVideos = useCallback(async (videos: Record<string, { videoUrl: string; status: string }>) => {
+  // Persist to branch JSON
+  const persistBranch = useCallback(async (updates: Record<string, unknown>) => {
     await fetch("/api/branches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ branchId, videos }),
+      body: JSON.stringify({ branchId, ...updates }),
     });
   }, [branchId]);
+
+  const persistVideos = useCallback(async (videos: Record<string, { videoUrl: string; status: string }>) => {
+    await persistBranch({ videos });
+  }, [persistBranch]);
+
+  // Select a variant as the active start/end image for a panel
+  const selectVariant = useCallback((panelId: string, position: "start" | "end", variantUrl: string) => {
+    setGenerated((prev) => {
+      if (!prev) return prev;
+      const images = { ...prev.images };
+      const panelImages = { ...images[panelId] };
+      if (position === "start") {
+        panelImages.startImage = variantUrl;
+      } else {
+        panelImages.endImage = variantUrl;
+      }
+      images[panelId] = panelImages;
+      const updated = { ...prev, images };
+      // Persist selection
+      persistBranch({ images });
+      return updated;
+    });
+  }, [persistBranch]);
 
   const handleGeneratePanel = useCallback(async (panelId: string) => {
     if (!generated) return;
@@ -75,7 +105,7 @@ export default function BranchPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           panelId: panel.id,
-          visualPrompt: panel.visualPrompt || panel.sceneDescription,
+          visualPrompt: panel.transitionPrompt || panel.visualPrompt || panel.sceneDescription,
           duration: panel.duration,
           firstFramePath: panelImages?.startImage,
           lastFramePath: panelImages?.endImage,
@@ -125,7 +155,7 @@ export default function BranchPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             panelId: panel.id,
-            visualPrompt: panel.visualPrompt || panel.sceneDescription,
+            visualPrompt: panel.transitionPrompt || panel.visualPrompt || panel.sceneDescription,
             duration: panel.duration,
             firstFramePath: panelImages?.startImage,
             lastFramePath: panelImages?.endImage,
@@ -332,6 +362,7 @@ export default function BranchPage() {
                     </svg>
                     Generate All Videos
               </button>
+              )}
             </div>
 
             {/* Storyboard panels */}
@@ -427,25 +458,66 @@ export default function BranchPage() {
                             )}
                           </div>
 
-                          {/* Inline frame thumbnails */}
-                          {(pStart || pEnd) && (
-                            <div className="flex gap-2 mb-3">
-                              {pStart && (
-                                <div className="w-[120px] flex-shrink-0">
+                          {/* Frame variants with selection */}
+                          {(pStart || pEnd || panelImages?.startVariants || panelImages?.endVariants) && (
+                            <div className="mb-3 space-y-2">
+                              {/* Start frame variants */}
+                              {(panelImages?.startVariants?.length ?? 0) > 1 ? (
+                                <div>
+                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase mb-1 block">Start Frame — click to select</span>
+                                  <div className="flex gap-1.5">
+                                    {panelImages!.startVariants!.map((v, vi) => (
+                                      <div
+                                        key={vi}
+                                        className={`w-[100px] flex-shrink-0 cursor-pointer transition-all ${
+                                          pStart === v ? "ring-1 ring-white/50" : "opacity-50 hover:opacity-80"
+                                        }`}
+                                        onClick={() => selectVariant(panel.id, "start", v)}
+                                      >
+                                        <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                          <img src={v} alt={`Start v${vi + 1}`} className="w-full h-full object-cover" />
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : pStart ? (
+                                <div className="w-[120px]">
                                   <div className="aspect-video bg-black border border-white/10 overflow-hidden">
                                     <img src={pStart} alt="In" className="w-full h-full object-cover" />
                                   </div>
-                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">In</span>
+                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">Start</span>
                                 </div>
-                              )}
-                              {pEnd && (
-                                <div className="w-[120px] flex-shrink-0">
+                              ) : null}
+
+                              {/* End frame variants */}
+                              {(panelImages?.endVariants?.length ?? 0) > 1 ? (
+                                <div>
+                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase mb-1 block">End Frame — click to select</span>
+                                  <div className="flex gap-1.5">
+                                    {panelImages!.endVariants!.map((v, vi) => (
+                                      <div
+                                        key={vi}
+                                        className={`w-[100px] flex-shrink-0 cursor-pointer transition-all ${
+                                          pEnd === v ? "ring-1 ring-white/50" : "opacity-50 hover:opacity-80"
+                                        }`}
+                                        onClick={() => selectVariant(panel.id, "end", v)}
+                                      >
+                                        <div className="aspect-video bg-black border border-white/10 overflow-hidden">
+                                          <img src={v} alt={`End v${vi + 1}`} className="w-full h-full object-cover" />
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : pEnd ? (
+                                <div className="w-[120px]">
                                   <div className="aspect-video bg-black border border-white/10 overflow-hidden">
                                     <img src={pEnd} alt="Out" className="w-full h-full object-cover" />
                                   </div>
-                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">Out</span>
+                                  <span className="text-[8px] text-white/15 tracking-[0.1em] uppercase">End</span>
                                 </div>
-                              )}
+                              ) : null}
                             </div>
                           )}
 
