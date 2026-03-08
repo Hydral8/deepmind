@@ -56,16 +56,19 @@ export default function CreatePage() {
   const [storyboard, setStoryboard] = useState<Storyboard | null>(null);
   const [storyboardLoading, setStoryboardLoading] = useState(false);
 
-  // ── Stage 3.5: Generation mode + frame planning ──
-  const [generationMode, setGenerationMode] = useState<"interpolate" | "generate" | "smart">("smart");
-  const [framePlan, setFramePlan] = useState<Record<string, { startFrame: string; endFrame: string; startTimestamp: number; endTimestamp: number }> | null>(null);
+  // ── Stage 3.5: Frame planning (driven by storyboard strategies) ──
   const [planningFrames, setPlanningFrames] = useState(false);
+  const [videoDuration, setVideoDuration] = useState<number | null>(null);
 
-  // Cache frame results per mode so switching tabs preserves work
-  const [frameCache, setFrameCache] = useState<Record<string, {
-    framePlan?: typeof framePlan;
-    smartImages?: Record<string, { startImage?: string; endImage?: string }>;
-  }>>({});
+  // Probe video duration on mount
+  useEffect(() => {
+    if (!episode?.videoUrl) return;
+    const video = document.createElement("video");
+    video.src = episode.videoUrl;
+    video.addEventListener("loadedmetadata", () => {
+      setVideoDuration(Math.round(video.duration));
+    });
+  }, [episode?.videoUrl]);
 
   // ── Stage 4: Video generation ──
   const [generatedVideos, setGeneratedVideos] = useState<
@@ -319,7 +322,15 @@ export default function CreatePage() {
       const res = await fetch("/api/generate-storyboard", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages, assets, branchType }),
+        body: JSON.stringify({
+          messages,
+          assets,
+          branchType,
+          videoDurationSeconds: videoDuration,
+          insertPoint,
+          replaceStart,
+          replaceEnd,
+        }),
       });
 
       if (!res.ok) {
@@ -338,31 +349,6 @@ export default function CreatePage() {
     }
   }
 
-  async function handlePlanFrames() {
-    if (!storyboard || !episode?.videoUrl) return;
-    setPlanningFrames(true);
-    try {
-      const branchId = `new-${Date.now()}`;
-      const res = await fetch("/api/plan-frames", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          panels: storyboard.panels,
-          videoPath: episode.videoUrl,
-          branchId,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setFramePlan(data.framePlan);
-      }
-    } catch {
-      // Fall through - will generate without frames
-    } finally {
-      setPlanningFrames(false);
-    }
-  }
-
   // Collect reference image paths from extracted assets
   function getReferenceImagePaths(): string[] {
     if (!assets) return [];
@@ -376,69 +362,41 @@ export default function CreatePage() {
     return paths;
   }
 
+  // Cache: extracted frames keyed by "panelId-start" / "panelId-end"
+  const [extractedFrameCache, setExtractedFrameCache] = useState<Record<string, string>>({});
+
+  async function handleExtractFrame(panelId: string, position: "start" | "end", timestamp: number): Promise<string | undefined> {
+    const cacheKey = `${panelId}-${position}`;
+    if (extractedFrameCache[cacheKey]) return extractedFrameCache[cacheKey];
+    if (!episode?.videoUrl) return undefined;
+
+    try {
+      const branchId = `new-${Date.now()}`;
+      const res = await fetch("/api/extract-frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoPath: episode.videoUrl,
+          timestamp,
+          branchId,
+          panelId,
+          position,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.imagePath) {
+          setExtractedFrameCache((prev) => ({ ...prev, [cacheKey]: data.imagePath }));
+          return data.imagePath;
+        }
+      }
+    } catch { /* fall through */ }
+    return undefined;
+  }
+
   async function handleGenerateVideos() {
     if (!storyboard) return;
     setStage("generating");
-
-    // Check cache first
-    let smartImages: Record<string, { startImage?: string; endImage?: string }> | null = frameCache.smart?.smartImages || null;
-    let currentFramePlan = frameCache.interpolate?.framePlan || framePlan;
-
-    // Smart mode: let Gemini decide per-frame whether to extract or generate
-    if (generationMode === "smart" && !smartImages && episode?.videoUrl && assets) {
-      setPlanningFrames(true);
-      try {
-        const brId = `new-${Date.now()}`;
-        const res = await fetch("/api/smart-frames", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            panels: storyboard.panels,
-            assets,
-            videoPath: episode.videoUrl,
-            branchId: brId,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          smartImages = data.images;
-          // Cache the result
-          setFrameCache((prev) => ({ ...prev, smart: { smartImages: data.images } }));
-        }
-      } catch {
-        // Continue without smart frames
-      } finally {
-        setPlanningFrames(false);
-      }
-    }
-
-    // Interpolate mode: extract all frames from source video
-    if (generationMode === "interpolate" && !currentFramePlan && episode?.videoUrl) {
-      setPlanningFrames(true);
-      try {
-        const branchId = `new-${Date.now()}`;
-        const res = await fetch("/api/plan-frames", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            panels: storyboard.panels,
-            videoPath: episode.videoUrl,
-            branchId,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          currentFramePlan = data.framePlan;
-          setFramePlan(data.framePlan);
-          // Cache the result
-          setFrameCache((prev) => ({ ...prev, interpolate: { framePlan: data.framePlan } }));
-        }
-      } catch {
-        // Continue without frames
-      } finally {
-        setPlanningFrames(false);
-      }
-    }
 
     const referenceImagePaths = getReferenceImagePaths();
 
@@ -449,24 +407,21 @@ export default function CreatePage() {
     }
     setGeneratedVideos(initial);
 
-    // Fire all video generations in parallel
+    // Use per-panel strategies from the storyboard (decided by Gemini)
     const promises = storyboard.panels.map(async (panel: StoryboardPanel) => {
       try {
-        const panelFrame = currentFramePlan?.[panel.id];
-        const smartFrame = smartImages?.[panel.id];
-
-        // Determine frame paths based on mode
         let firstFramePath: string | undefined;
         let lastFramePath: string | undefined;
 
-        if (generationMode === "smart" && smartFrame) {
-          firstFramePath = smartFrame.startImage;
-          lastFramePath = smartFrame.endImage;
-        } else if (generationMode === "interpolate" && panelFrame) {
-          firstFramePath = panelFrame.startFrame;
-          lastFramePath = panelFrame.endFrame;
+        // Extract frames where Gemini said "extract"
+        if (panel.startFrameStrategy?.strategy === "extract" && panel.startFrameStrategy.timestamp) {
+          firstFramePath = await handleExtractFrame(panel.id, "start", panel.startFrameStrategy.timestamp);
+        }
+        if (panel.endFrameStrategy?.strategy === "extract" && panel.endFrameStrategy.timestamp) {
+          lastFramePath = await handleExtractFrame(panel.id, "end", panel.endFrameStrategy.timestamp);
         }
 
+        // For "generate" strategy frames, the video gen API will use image gen or text-to-video
         const res = await fetch("/api/generate-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1176,93 +1131,24 @@ export default function CreatePage() {
                     </button>
                   </div>
 
-                  {/* Generation mode selector */}
-                  <div className="flex gap-3 mb-4">
-                    <button
-                      onClick={() => { setGenerationMode("smart"); setFramePlan(null); }}
-                      className={`flex-1 p-3 text-left transition-all ${
-                        generationMode === "smart"
-                          ? "bg-emerald-500/10 border border-emerald-500/30"
-                          : "bg-[#181818] border border-white/5 hover:border-white/15"
-                      }`}
-                    >
-                      <div className="text-[11px] font-semibold mb-0.5">Smart <span className="text-[8px] font-normal text-emerald-400/60 ml-1">Recommended</span></div>
-                      <p className="text-[9px] text-white/30">
-                        Gemini analyzes each frame — extracts from source when possible, generates new when the scene diverges.
-                      </p>
-                    </button>
-                    <button
-                      onClick={() => { setGenerationMode("interpolate"); setFramePlan(null); }}
-                      className={`flex-1 p-3 text-left transition-all ${
-                        generationMode === "interpolate"
-                          ? "bg-blue-500/10 border border-blue-500/30"
-                          : "bg-[#181818] border border-white/5 hover:border-white/15"
-                      }`}
-                    >
-                      <div className="text-[11px] font-semibold mb-0.5">Extract from Source</div>
-                      <p className="text-[9px] text-white/30">
-                        All frames pulled from the original video at timestamps Gemini selects.
-                      </p>
-                    </button>
-                    <button
-                      onClick={() => { setGenerationMode("generate"); setFramePlan(null); }}
-                      className={`flex-1 p-3 text-left transition-all ${
-                        generationMode === "generate"
-                          ? "bg-purple-500/10 border border-purple-500/30"
-                          : "bg-[#181818] border border-white/5 hover:border-white/15"
-                      }`}
-                    >
-                      <div className="text-[11px] font-semibold mb-0.5">Generate All New</div>
-                      <p className="text-[9px] text-white/30">
-                        Create entirely new frames with AI image generation using extracted assets as reference.
-                      </p>
-                    </button>
-                  </div>
-
-                  {/* Frame plan preview button */}
-                  {(generationMode === "interpolate" || generationMode === "smart") && !framePlan && episode?.videoUrl && (
-                    <button
-                      onClick={handlePlanFrames}
-                      disabled={planningFrames}
-                      className="w-full p-3 mb-4 bg-[#181818] border border-white/10 hover:border-white/20 text-[10px] text-white/40 tracking-[0.1em] uppercase transition-colors disabled:opacity-30"
-                    >
-                      {planningFrames ? "Analyzing video for best frames..." : "Preview Frame Plan"}
-                    </button>
-                  )}
-
-                  {/* Frame plan preview */}
-                  {framePlan && (
-                    <div className="mb-4 p-4 bg-[#181818] border border-blue-500/10">
-                      <h3 className="text-[10px] tracking-[0.2em] uppercase text-blue-400/60 mb-3">Frame Plan (from source video)</h3>
-                      <div className="space-y-3">
-                        {storyboard.panels.map((panel) => {
-                          const plan = framePlan[panel.id];
-                          if (!plan) return null;
-                          return (
-                            <div key={panel.id} className="flex items-center gap-3">
-                              <span className="text-[10px] text-white/30 w-16 flex-shrink-0">Panel {panel.order}</span>
-                              <div className="flex gap-2">
-                                <div className="w-[80px]">
-                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                                    <img src={plan.startFrame} alt="In" className="w-full h-full object-cover" />
-                                  </div>
-                                  <span className="text-[8px] text-white/15">In @ {plan.startTimestamp}s</span>
-                                </div>
-                                <div className="flex items-center text-white/15">
-                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
-                                </div>
-                                <div className="w-[80px]">
-                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                                    <img src={plan.endFrame} alt="Out" className="w-full h-full object-cover" />
-                                  </div>
-                                  <span className="text-[8px] text-white/15">Out @ {plan.endTimestamp}s</span>
-                                </div>
-                              </div>
-                              <p className="text-[10px] text-white/30 flex-1 line-clamp-1">{panel.sceneDescription}</p>
-                            </div>
-                          );
-                        })}
+                  {/* Splice Strategy (decided by Gemini) */}
+                  {storyboard.spliceStrategy && (
+                    <div className="mb-4 p-4 bg-[#181818] border border-emerald-500/10">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className={`w-2 h-2 rounded-full ${
+                          storyboard.spliceStrategy.type === "replace" ? "bg-orange-400" :
+                          storyboard.spliceStrategy.type === "insert_after" ? "bg-blue-400" :
+                          "bg-purple-400"
+                        }`} />
+                        <h3 className="text-[10px] tracking-[0.2em] uppercase text-white/50">
+                          {storyboard.spliceStrategy.type === "replace"
+                            ? `Replace ${storyboard.spliceStrategy.startTime}s – ${storyboard.spliceStrategy.endTime}s in original`
+                            : storyboard.spliceStrategy.type === "insert_after"
+                            ? `Insert after ${storyboard.spliceStrategy.startTime}s in original`
+                            : "Standalone scene"}
+                        </h3>
                       </div>
+                      <p className="text-[9px] text-white/30">{storyboard.spliceStrategy.reason}</p>
                     </div>
                   )}
 
@@ -1282,71 +1168,80 @@ export default function CreatePage() {
                 </div>
 
                 <div className="space-y-4">
-                  {storyboard.panels.map((panel) => {
-                    const plan = framePlan?.[panel.id];
-                    return (
-                      <div
-                        key={panel.id}
-                        className="bg-[#181818] border border-white/5 p-5"
-                      >
-                        <div className="flex items-start gap-4">
-                          <div className="w-8 h-8 flex items-center justify-center bg-white/5 text-[12px] font-bold text-white/40 flex-shrink-0">
-                            {panel.order}
-                          </div>
-                          <div className="flex-1">
-                            {/* Inline frame thumbnails if available */}
-                            {plan && (
-                              <div className="flex gap-2 mb-3">
-                                <div className="w-[100px] flex-shrink-0">
-                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                                    <img src={plan.startFrame} alt="In" className="w-full h-full object-cover" />
-                                  </div>
-                                  <span className="text-[8px] text-white/15">In @ {plan.startTimestamp}s</span>
-                                </div>
-                                <div className="flex items-center text-white/10">
-                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
-                                </div>
-                                <div className="w-[100px] flex-shrink-0">
-                                  <div className="aspect-video bg-black border border-white/10 overflow-hidden">
-                                    <img src={plan.endFrame} alt="Out" className="w-full h-full object-cover" />
-                                  </div>
-                                  <span className="text-[8px] text-white/15">Out @ {plan.endTimestamp}s</span>
-                                </div>
-                              </div>
-                            )}
-                            <p className="text-[13px] text-white/80 mb-2">
-                              {panel.sceneDescription}
+                  {storyboard.panels.map((panel) => (
+                    <div
+                      key={panel.id}
+                      className="bg-[#181818] border border-white/5 p-5"
+                    >
+                      <div className="flex items-start gap-4">
+                        <div className="w-8 h-8 flex items-center justify-center bg-white/5 text-[12px] font-bold text-white/40 flex-shrink-0">
+                          {panel.order}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-[13px] text-white/80 mb-2">
+                            {panel.sceneDescription}
+                          </p>
+                          {panel.dialogue && (
+                            <p className="text-[12px] text-white/40 italic mb-2">
+                              &ldquo;{panel.dialogue}&rdquo;
                             </p>
-                            {panel.dialogue && (
-                              <p className="text-[12px] text-white/40 italic mb-2">
-                                &ldquo;{panel.dialogue}&rdquo;
-                              </p>
-                            )}
-                            <div className="flex flex-wrap gap-3 text-[10px] text-white/25">
-                              <span>
-                                Camera: {panel.cameraAngle}
-                              </span>
-                              <span>
-                                Movement: {panel.cameraMovement}
-                              </span>
-                              <span>Mood: {panel.mood}</span>
-                              <span>{panel.duration}s</span>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5 mt-2">
-                              {panel.characters.map((c, i) => (
-                                <span
-                                  key={i}
-                                  className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40"
-                                >
-                                  {c}
+                          )}
+
+                          {/* Frame strategy badges */}
+                          <div className="flex gap-3 mb-3 mt-3">
+                            <div className="flex-1 p-2.5 bg-black/30 border border-white/5">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <div className={`w-1.5 h-1.5 rounded-full ${
+                                  panel.startFrameStrategy?.strategy === "extract" ? "bg-blue-400" : "bg-purple-400"
+                                }`} />
+                                <span className="text-[9px] tracking-[0.15em] uppercase text-white/40">
+                                  Start Frame — {panel.startFrameStrategy?.strategy === "extract"
+                                    ? `Extract @ ${panel.startFrameStrategy.timestamp}s`
+                                    : "AI Generate"}
                                 </span>
-                              ))}
+                              </div>
+                              <p className="text-[8px] text-white/20 line-clamp-2">
+                                {panel.startFrameStrategy?.reason}
+                              </p>
                             </div>
+                            <div className="flex items-center text-white/10">
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
+                            </div>
+                            <div className="flex-1 p-2.5 bg-black/30 border border-white/5">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <div className={`w-1.5 h-1.5 rounded-full ${
+                                  panel.endFrameStrategy?.strategy === "extract" ? "bg-blue-400" : "bg-purple-400"
+                                }`} />
+                                <span className="text-[9px] tracking-[0.15em] uppercase text-white/40">
+                                  End Frame — {panel.endFrameStrategy?.strategy === "extract"
+                                    ? `Extract @ ${panel.endFrameStrategy.timestamp}s`
+                                    : "AI Generate"}
+                                </span>
+                              </div>
+                              <p className="text-[8px] text-white/20 line-clamp-2">
+                                {panel.endFrameStrategy?.reason}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-3 text-[10px] text-white/25">
+                            <span>Mood: {panel.mood}</span>
+                            <span>{panel.duration}s</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {panel.characters.map((c, i) => (
+                              <span
+                                key={i}
+                                className="px-2 py-0.5 text-[9px] bg-white/5 text-white/40"
+                              >
+                                {c}
+                              </span>
+                            ))}
                           </div>
                         </div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  ))}
                 </div>
 
                 {storyboard.musicPrompt && (
@@ -1389,7 +1284,7 @@ export default function CreatePage() {
               <p className="text-[11px] text-white/30">
                 {allDone
                   ? "All panels generated. Your alternate scene is ready."
-                  : `Generating ${storyboard.panels.length} panels in parallel with Veo...`}
+                  : `Generating ${storyboard.panels.length} panels...`}
               </p>
             </div>
 
@@ -1455,8 +1350,9 @@ export default function CreatePage() {
               })}
             </div>
 
-            {/* Composite player for insert/replace mode */}
-            {allDone && episode?.videoUrl && (branchType === "insert" || branchType === "replace") && (() => {
+            {/* Composite player — uses splice strategy from storyboard */}
+            {allDone && episode?.videoUrl && storyboard.spliceStrategy?.type !== "standalone" && (() => {
+              const splice = storyboard.spliceStrategy;
               const generatedClipUrls = storyboard.panels
                 .map((p) => generatedVideos[p.id])
                 .filter((v) => v?.status === "done" && (v.videoUrl || v.videoData))
@@ -1471,20 +1367,20 @@ export default function CreatePage() {
               let segments;
               let description;
 
-              if (branchType === "insert" && insertPoint != null) {
+              if (splice.type === "insert_after" && splice.startTime != null) {
                 segments = [
-                  { type: "original" as const, src: episode.videoUrl!, startTime: 0, endTime: insertPoint, label: "Before insert" },
+                  { type: "original" as const, src: episode.videoUrl!, startTime: 0, endTime: splice.startTime, label: "Before insert" },
                   ...generatedClipUrls,
-                  { type: "original" as const, src: episode.videoUrl!, startTime: insertPoint, label: "After insert" },
+                  { type: "original" as const, src: episode.videoUrl!, startTime: splice.startTime, label: "After insert" },
                 ];
-                description = <>Original &rarr; Insert @ {fmtTime(insertPoint)} &rarr; Original continues</>;
-              } else if (branchType === "replace" && replaceStart != null && replaceEnd != null) {
+                description = <>Original &rarr; Insert @ {fmtTime(splice.startTime)} &rarr; Original continues</>;
+              } else if (splice.type === "replace" && splice.startTime != null && splice.endTime != null) {
                 segments = [
-                  { type: "original" as const, src: episode.videoUrl!, startTime: 0, endTime: replaceStart, label: "Before" },
+                  { type: "original" as const, src: episode.videoUrl!, startTime: 0, endTime: splice.startTime, label: "Before" },
                   ...generatedClipUrls,
-                  { type: "original" as const, src: episode.videoUrl!, startTime: replaceEnd, label: "After" },
+                  { type: "original" as const, src: episode.videoUrl!, startTime: splice.endTime, label: "After" },
                 ];
-                description = <>Original &rarr; Replaced {fmtTime(replaceStart)}–{fmtTime(replaceEnd)} &rarr; Original continues</>;
+                description = <>Original &rarr; Replaced {fmtTime(splice.startTime)}–{fmtTime(splice.endTime)} &rarr; Original continues</>;
               } else {
                 return null;
               }

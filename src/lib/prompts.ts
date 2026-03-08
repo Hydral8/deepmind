@@ -212,9 +212,23 @@ YOUR ROLE:
 export function buildStoryboardPrompt(
   assets: ExtractedAssets,
   conversationSummary: string,
-  branchType: string
+  branchType: string,
+  videoDurationSeconds?: number,
+  insertPoint?: number | null,
+  replaceStart?: number | null,
+  replaceEnd?: number | null
 ): string {
-  return `You are a storyboard artist and cinematographer creating a shot-by-shot breakdown for an alternate ${branchType}.
+  const spliceContext = insertPoint != null
+    ? `\nThe user wants to INSERT new content after ${insertPoint}s in the original video.`
+    : replaceStart != null && replaceEnd != null
+    ? `\nThe user wants to REPLACE the segment from ${replaceStart}s to ${replaceEnd}s in the original video.`
+    : `\nThe user has not specified where this goes. You must decide: should this replace a segment of the original, be inserted at a point, or stand alone?`;
+
+  const durationContext = videoDurationSeconds
+    ? `\nOriginal video duration: ${videoDurationSeconds}s.`
+    : "";
+
+  return `You are a storyboard artist, cinematographer, and editor creating a shot-by-shot breakdown for an alternate ${branchType}.
 
 CREATIVE BRIEF (from conversation with the viewer):
 ${conversationSummary}
@@ -234,6 +248,8 @@ Aspect ratio: ${assets.cameraStyle.aspectRatio}
 WORLD RULES:
 ${assets.seriesContext.worldRules}
 Tone: ${assets.seriesContext.tone}
+${durationContext}
+${spliceContext}
 
 Generate a storyboard as JSON with exactly 2 panels.
 
@@ -251,6 +267,19 @@ FOR EACH PANEL, you must provide three distinct prompts:
 
 3. **transitionPrompt** — Describes what HAPPENS between start and end. This drives the video generation model to animate the change. Focus on: motion, action, emotional shift, camera movement. This is NOT a still image — it describes movement and transformation.
 
+FOR EACH PANEL, you must also decide the **frame strategy** for both start and end frames:
+
+4. **startFrameStrategy** — Should the start frame be extracted from the source video or generated with AI?
+   - Use "extract" when the visual state closely matches existing footage (same characters, environment, lighting, mood). Provide the best timestamp.
+   - Use "generate" when the scene diverges significantly (new composition, new emotion, altered environment, characters in unseen positions).
+
+5. **endFrameStrategy** — Same decision for the end frame. Each frame is independent — you can extract one and generate the other.
+
+You must also decide the **spliceStrategy** — how this alternate content integrates with the original video:
+- "replace": Replace a specific time range in the original (provide startTime and endTime in seconds). Use when the alternate rewrites an existing scene.
+- "insert_after": Insert after a specific timestamp (provide startTime). Use when adding a new scene that doesn't exist.
+- "standalone": This alternate stands on its own, not spliced into the original. Use for completely reimagined scenes.
+
 RULES FOR ALL PROMPTS:
 - NEVER use character names. Describe by appearance: "a tall woman with silver-blonde braided hair, pale skin, wearing dark leather armor" — not "Daenerys".
 - Each prompt must be self-contained. Include: subject position, background, foreground, lighting, atmosphere, color palette.
@@ -260,6 +289,12 @@ ${VISUAL_REALISM_DIRECTIVE}
 
 {
   "title": "title for this alternate branch",
+  "spliceStrategy": {
+    "type": "replace | insert_after | standalone",
+    "startTime": 45,
+    "endTime": 75,
+    "reason": "why this splice point was chosen"
+  },
   "panels": [
     {
       "id": "panel-1",
@@ -270,9 +305,11 @@ ${VISUAL_REALISM_DIRECTIVE}
       "environment": "setting",
       "mood": "emotional tone",
       "duration": 12,
-      "startFramePrompt": "Still image: what the first frame looks like. Specific composition, character positions, expressions, lighting.",
-      "endFramePrompt": "Still image: what the last frame looks like. Must differ from start — show the change.",
-      "transitionPrompt": "What happens between start and end. Motion, action, camera movement, emotional shift."
+      "startFramePrompt": "Still image: what the first frame looks like.",
+      "endFramePrompt": "Still image: what the last frame looks like. Must differ from start.",
+      "transitionPrompt": "What happens between start and end.",
+      "startFrameStrategy": { "strategy": "extract", "timestamp": 45, "reason": "matches opening composition" },
+      "endFrameStrategy": { "strategy": "generate", "reason": "character emotion not present in source" }
     }
   ],
   "musicPrompt": "Score description: instrumentation, tempo, key, emotional arc.",
@@ -367,6 +404,46 @@ export function buildPanelImagePrompt(
 
 Hyperrealistic, photorealistic cinematic film frame. ${assets.cameraStyle.colorGrading}. ${assets.cameraStyle.visualTone}.
 Each character appears at most once — no duplicates or reflections. 16:9. No watermarks or text.`;
+}
+
+// ── Asset-Aware Image Prompt Enrichment ──
+// Gemini sees reference images + frame prompt, selects relevant assets, writes enriched prompt
+
+export function buildAssetEnrichmentPrompt(
+  framePrompt: string,
+  position: "start" | "end",
+  panel: StoryboardPanel,
+  assets: ExtractedAssets,
+  availableAssetNames: string[]
+): string {
+  return `You are a cinematographer preparing an exact frame for AI image generation. You have reference images of characters and environments from the source material. Your job is to write a SINGLE, precise image generation prompt that will produce a frame matching the scene description.
+
+SCENE CONTEXT:
+Panel: ${panel.sceneDescription}
+Frame position: ${position} frame (${position === "start" ? "opening" : "closing"} of this beat)
+Characters in scene: ${panel.characters.join(", ")}
+Environment: ${panel.environment}
+Mood: ${panel.mood}
+
+ORIGINAL FRAME PROMPT:
+${framePrompt}
+
+AVAILABLE REFERENCE ASSETS (images attached in order):
+${availableAssetNames.map((name, i) => `[Image ${i + 1}] ${name}`).join("\n")}
+
+YOUR TASK:
+1. Look at each reference image carefully. Note EXACT details: skin tone, hair color/style, facial structure, clothing, scars, jewelry, posture.
+2. Select which references are relevant to this specific frame.
+3. Write ONE image generation prompt that:
+   - Incorporates the EXACT visual details you see in the reference images (not generic descriptions — what you actually SEE)
+   - Describes the specific composition, camera angle, lighting for this frame
+   - Maintains the scene's mood and environment
+   - NEVER uses character names — only visual descriptions derived from the reference images
+   - Each character appears at most once — no duplicates or reflections
+
+4. End with style directives: "Hyperrealistic, photorealistic cinematic film frame. ${assets.cameraStyle.colorGrading}. ${assets.cameraStyle.visualTone}. 16:9. No watermarks or text."
+
+Return ONLY the final image generation prompt as plain text. No JSON, no markdown, no explanation — just the prompt.`;
 }
 
 // ── Video Generation (Veo) ──

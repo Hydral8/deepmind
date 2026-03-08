@@ -55,6 +55,14 @@ export interface ExtractedAssets {
   cameraStyle: CameraStyle;
 }
 
+// ── Frame Strategy Types ──
+
+export interface FrameStrategy {
+  strategy: "extract" | "generate";
+  timestamp?: number;  // only when strategy is "extract"
+  reason: string;
+}
+
 // ── Storyboard Types ──
 
 export interface StoryboardPanel {
@@ -69,6 +77,8 @@ export interface StoryboardPanel {
   startFramePrompt: string;  // still image: what the first frame looks like
   endFramePrompt: string;    // still image: what the last frame looks like
   transitionPrompt: string;  // what changes between start and end (drives video gen)
+  startFrameStrategy: FrameStrategy;
+  endFrameStrategy: FrameStrategy;
   // Legacy / optional
   visualPrompt?: string;
   cameraAngle?: string;
@@ -77,9 +87,17 @@ export interface StoryboardPanel {
   endFrame?: string;
 }
 
+export interface SpliceStrategy {
+  type: "replace" | "insert_after" | "standalone";
+  startTime?: number;  // seconds into original video (for replace/insert)
+  endTime?: number;    // seconds into original video (for replace)
+  reason: string;
+}
+
 export interface Storyboard {
   title: string;
   panels: StoryboardPanel[];
+  spliceStrategy: SpliceStrategy;
   musicPrompt: string;
   totalDuration: number;
 }

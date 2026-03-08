@@ -1,14 +1,135 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fal } from "@fal-ai/client";
 import { StoryboardPanel, ExtractedAssets } from "@/lib/types";
-import { buildPanelImagePrompt } from "@/lib/prompts";
+import { getGeminiClient } from "@/lib/gemini";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
 
 export const maxDuration = 120;
 
-fal.config({ credentials: process.env.FAL_KEY });
+// Gather relevant asset images for a panel as Gemini-compatible inline parts
+function gatherAssetParts(
+  panel: StoryboardPanel,
+  assets: ExtractedAssets
+): { labels: string[]; parts: Array<{ inlineData: { data: string; mimeType: string } }> } {
+  const labels: string[] = [];
+  const parts: Array<{ inlineData: { data: string; mimeType: string } }> = [];
+
+  for (const charName of panel.characters) {
+    const charAsset = assets.characters.find(
+      (c) => c.name.toLowerCase() === charName.toLowerCase()
+    );
+    if (charAsset?.imagePath) {
+      const absPath = path.join(process.cwd(), "public", charAsset.imagePath);
+      if (fs.existsSync(absPath)) {
+        const data = fs.readFileSync(absPath).toString("base64");
+        labels.push(`Character: ${charAsset.name} — ${charAsset.description}. Traits: ${charAsset.keyTraits.join(", ")}`);
+        parts.push({ inlineData: { data, mimeType: "image/jpeg" } });
+      }
+    }
+  }
+
+  for (const env of assets.environments) {
+    if (panel.environment.toLowerCase().includes(env.name.toLowerCase().split(",")[0])) {
+      if (env.imagePath) {
+        const absPath = path.join(process.cwd(), "public", env.imagePath);
+        if (fs.existsSync(absPath)) {
+          const data = fs.readFileSync(absPath).toString("base64");
+          labels.push(`Environment: ${env.name} — ${env.description}. Lighting: ${env.lighting}. Mood: ${env.mood}`);
+          parts.push({ inlineData: { data, mimeType: "image/jpeg" } });
+        }
+      }
+      break;
+    }
+  }
+
+  return { labels, parts };
+}
+
+function buildImageGenPrompt(
+  framePrompt: string,
+  position: "start" | "end",
+  panel: StoryboardPanel,
+  assets: ExtractedAssets,
+  assetLabels: string[]
+): string {
+  const assetRef = assetLabels.length > 0
+    ? `\n\nREFERENCE ASSETS (images provided above — match these EXACTLY):\n${assetLabels.map((l, i) => `[Image ${i + 1}] ${l}`).join("\n")}`
+    : "";
+
+  return `Generate a photorealistic cinematic film frame for the ${position} of this scene.
+
+SCENE: ${panel.sceneDescription}
+FRAME DESCRIPTION: ${framePrompt}
+ENVIRONMENT: ${panel.environment}
+MOOD: ${panel.mood}
+${assetRef}
+
+REQUIREMENTS:
+- The generated image must look like a frame from a high-end TV production, not AI art
+- Characters must match the reference images EXACTLY — same face, same hair, same clothing, same skin tone. Do NOT alter their appearance.
+- Environment must match the reference — same materials, same lighting quality, same color palette
+- Camera: ${assets.cameraStyle.colorGrading}. ${assets.cameraStyle.visualTone}
+- Each character appears at most once — no duplicates or reflections
+- 16:9 aspect ratio. No watermarks, no text overlays, no borders
+- Hyperrealistic, photorealistic. Film grain, natural depth of field.`;
+}
+
+// Generate image using Gemini's native image generation with reference assets
+async function generateWithGemini(
+  framePrompt: string,
+  position: "start" | "end",
+  panel: StoryboardPanel,
+  assets: ExtractedAssets,
+  numVariants: number
+): Promise<Buffer[]> {
+  const ai = getGeminiClient();
+  const { labels, parts: assetParts } = gatherAssetParts(panel, assets);
+  const prompt = buildImageGenPrompt(framePrompt, position, panel, assets, labels);
+
+  const buffers: Buffer[] = [];
+
+  // Gemini image gen returns 1 image per call, so we parallelize for variants
+  const promises = Array.from({ length: numVariants }, async () => {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash-preview-image-generation",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              ...assetParts,
+              { text: prompt },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ["IMAGE", "TEXT"],
+        },
+      });
+
+      // Extract image from response parts
+      const candidates = (response as any).candidates || [];
+      for (const candidate of candidates) {
+        for (const part of candidate.content?.parts || []) {
+          if (part.inlineData?.data) {
+            return Buffer.from(part.inlineData.data, "base64");
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[${panel.id}] Gemini image gen failed for ${position}:`, err);
+    }
+    return null;
+  });
+
+  const results = await Promise.all(promises);
+  for (const buf of results) {
+    if (buf) buffers.push(buf);
+  }
+
+  return buffers;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -26,7 +147,7 @@ export async function POST(req: NextRequest) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    // Use original video frames if Gemini told us to
+    // Use original video frames if strategy says extract
     if (useOriginalFrames && videoPath) {
       const absVideoPath = path.join(process.cwd(), "public", videoPath);
       if (fs.existsSync(absVideoPath)) {
@@ -51,95 +172,44 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Build reference descriptions from assets
-    const referenceDescriptions: string[] = [];
-
-    for (const charName of panel.characters) {
-      const charAsset = assets.characters.find(
-        (c) => c.name.toLowerCase() === charName.toLowerCase()
-      );
-      if (charAsset) {
-        referenceDescriptions.push(
-          `CHARACTER "${charAsset.name}": ${charAsset.description}. Traits: ${charAsset.keyTraits.join(", ")}. Multi-view: ${charAsset.multiviewDescription}`
-        );
-      }
-    }
-
-    for (const env of assets.environments) {
-      if (panel.environment.toLowerCase().includes(env.name.toLowerCase().split(",")[0])) {
-        referenceDescriptions.push(
-          `ENVIRONMENT "${env.name}": ${env.description}. Lighting: ${env.lighting}. Mood: ${env.mood}`
-        );
-        break;
-      }
-    }
-
     const variantCount = Math.min(Math.max(numVariants, 1), 4);
 
-    // Use panel's own prompts if available, fall back to buildPanelImagePrompt
-    const startPrompt = panel.startFramePrompt || buildPanelImagePrompt(panel, assets, referenceDescriptions, "start");
-    console.log(`[${panel.id}] Generating ${variantCount} start frame variant(s) with Nano Banana 2...`);
+    const rawStartPrompt = panel.startFramePrompt || panel.sceneDescription;
+    const rawEndPrompt = panel.endFramePrompt || panel.sceneDescription;
 
-    const startResult = await fal.subscribe("fal-ai/nano-banana-2", {
-      input: {
-        prompt: startPrompt,
-        num_images: variantCount,
-        aspect_ratio: "16:9",
-        output_format: "png",
-        resolution: "1K",
-      },
-    });
+    console.log(`[${panel.id}] Generating ${variantCount} start + end frame variant(s) with Gemini native image gen...`);
 
-    const startImages = (startResult.data as any)?.images || [];
+    // Generate start and end frames in parallel, each with reference assets
+    const [startBuffers, endBuffers] = await Promise.all([
+      generateWithGemini(rawStartPrompt, "start", panel, assets, variantCount),
+      generateWithGemini(rawEndPrompt, "end", panel, assets, variantCount),
+    ]);
+
     const startVariants: string[] = [];
-    for (let v = 0; v < startImages.length; v++) {
-      const imgUrl = startImages[v]?.url;
-      if (!imgUrl) continue;
-      const imgResponse = await fetch(imgUrl);
-      const buffer = Buffer.from(await imgResponse.arrayBuffer());
+    for (let v = 0; v < startBuffers.length; v++) {
       const suffix = variantCount > 1 ? `-v${v + 1}` : "";
       const filename = `${panel.id}-start${suffix}.png`;
-      fs.writeFileSync(path.join(outputDir, filename), buffer);
+      fs.writeFileSync(path.join(outputDir, filename), startBuffers[v]);
       startVariants.push(`/branches/images/${branchId}/${filename}`);
       console.log(`[${panel.id}] Start frame saved: ${filename}`);
     }
 
-    const endPrompt = panel.endFramePrompt || buildPanelImagePrompt(panel, assets, referenceDescriptions, "end");
-    console.log(`[${panel.id}] Generating ${variantCount} end frame variant(s) with Nano Banana 2...`);
-
-    const endResult = await fal.subscribe("fal-ai/nano-banana-2", {
-      input: {
-        prompt: endPrompt,
-        num_images: variantCount,
-        aspect_ratio: "16:9",
-        output_format: "png",
-        resolution: "1K",
-      },
-    });
-
-    const endImages = (endResult.data as any)?.images || [];
     const endVariants: string[] = [];
-    for (let v = 0; v < endImages.length; v++) {
-      const imgUrl = endImages[v]?.url;
-      if (!imgUrl) continue;
-      const imgResponse = await fetch(imgUrl);
-      const buffer = Buffer.from(await imgResponse.arrayBuffer());
+    for (let v = 0; v < endBuffers.length; v++) {
       const suffix = variantCount > 1 ? `-v${v + 1}` : "";
       const filename = `${panel.id}-end${suffix}.png`;
-      fs.writeFileSync(path.join(outputDir, filename), buffer);
+      fs.writeFileSync(path.join(outputDir, filename), endBuffers[v]);
       endVariants.push(`/branches/images/${branchId}/${filename}`);
       console.log(`[${panel.id}] End frame saved: ${filename}`);
     }
 
     return NextResponse.json({
       panelId: panel.id,
-      // Default selected (first variant)
       startImage: startVariants[0],
       endImage: endVariants[0],
-      // All variants for choosing
       startVariants,
       endVariants,
-      source: "generated",
+      source: "gemini",
     });
   } catch (error: unknown) {
     console.error("Panel image generation error:", error);
